@@ -91,4 +91,40 @@ struct MessageTests {
         #expect(decoded.toolCallId == "call_123")
         #expect(decoded.content == "Sunny, 72°F")
     }
+
+    // MARK: - isImage
+
+    @Test func textIsNotImage() {
+        #expect(!MessageContent.text("hello").isImage)
+    }
+
+    @Test func imageIsImage() throws {
+        let url = try #require(URL(string: "https://example.com/image.png"))
+        #expect(MessageContent.image(.url(url)).isImage)
+    }
+
+    @Test func base64ImageIsImage() {
+        #expect(MessageContent.image(.base64(data: "abc", mimeType: "image/png")).isImage)
+    }
+
+    @Test func mixedWithImageIsImage() throws {
+        let url = try #require(URL(string: "https://example.com/image.png"))
+        let mixed = MessageContent.mixed([.text("Caption"), .image(.url(url))])
+        #expect(mixed.isImage)
+    }
+
+    @Test func mixedWithoutImageIsNotImage() {
+        let mixed = MessageContent.mixed([.text("A"), .text("B")])
+        #expect(!mixed.isImage)
+    }
+
+    @Test func toolCallIsNotImage() {
+        let toolCall = ToolCall(id: "1", name: "test", arguments: .null)
+        #expect(!MessageContent.toolCall(toolCall).isImage)
+    }
+
+    @Test func toolResultIsNotImage() {
+        let result = ToolResult(toolCallId: "1", content: "result")
+        #expect(!MessageContent.toolResult(result).isImage)
+    }
 }

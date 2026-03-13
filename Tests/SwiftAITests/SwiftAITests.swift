@@ -273,7 +273,7 @@ struct ConcurrencyTests {
     @Test func spendingGuardReservationReleaseOnCancel() async throws {
         let guard_ = SpendingGuard(budgetLimit: 0.5)
 
-        let reservation = try await guard_.reserveBudget(estimatedCost: 0.3)
+        let reservation = try #require(try await guard_.reserveBudget(estimatedCost: 0.3))
         #expect(await guard_.remainingBudget == 0.2)
 
         // Simulate request cancellation — release reserved amount
