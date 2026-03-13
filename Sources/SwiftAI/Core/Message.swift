@@ -53,6 +53,15 @@ public enum MessageContent: Sendable, Equatable {
         default: nil
         }
     }
+
+    /// Whether this content contains an image
+    public var isImage: Bool {
+        switch self {
+        case .image: true
+        case .mixed(let parts): parts.contains(where: \.isImage)
+        default: false
+        }
+    }
 }
 
 /// Where an image comes from
@@ -86,7 +95,7 @@ public struct ToolResult: Sendable, Equatable, Codable {
 }
 
 /// Describes a tool the model can call
-public struct ToolDefinition: Sendable, Equatable {
+public struct ToolDefinition: Sendable, Equatable, Codable {
     public let name: String
     public let description: String
     public let inputSchema: JSONValue
@@ -98,7 +107,57 @@ public struct ToolDefinition: Sendable, Equatable {
     }
 }
 
-// Codable conformance for Message with custom encoding
+// MARK: - Codable
+
+extension MessageContent: Codable {
+    enum CodingKeys: String, CodingKey {
+        case type, text, image, toolCall, toolResult, parts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        switch type {
+        case "text":
+            self = .text(try container.decode(String.self, forKey: .text))
+        case "image":
+            self = .image(try container.decode(ImageSource.self, forKey: .image))
+        case "toolCall":
+            self = .toolCall(try container.decode(ToolCall.self, forKey: .toolCall))
+        case "toolResult":
+            self = .toolResult(try container.decode(ToolResult.self, forKey: .toolResult))
+        case "mixed":
+            self = .mixed(try container.decode([MessageContent].self, forKey: .parts))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type, in: container,
+                debugDescription: "Unknown MessageContent type: \(type)"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let string):
+            try container.encode("text", forKey: .type)
+            try container.encode(string, forKey: .text)
+        case .image(let source):
+            try container.encode("image", forKey: .type)
+            try container.encode(source, forKey: .image)
+        case .toolCall(let call):
+            try container.encode("toolCall", forKey: .type)
+            try container.encode(call, forKey: .toolCall)
+        case .toolResult(let result):
+            try container.encode("toolResult", forKey: .type)
+            try container.encode(result, forKey: .toolResult)
+        case .mixed(let parts):
+            try container.encode("mixed", forKey: .type)
+            try container.encode(parts, forKey: .parts)
+        }
+    }
+}
+
 extension Message: Codable {
     enum CodingKeys: String, CodingKey {
         case id, role, content
@@ -108,14 +167,13 @@ extension Message: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         role = try container.decode(Role.self, forKey: .role)
-        let text = try container.decode(String.self, forKey: .content)
-        content = .text(text)
+        content = try container.decode(MessageContent.self, forKey: .content)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(role, forKey: .role)
-        try container.encode(content.text ?? "", forKey: .content)
+        try container.encode(content, forKey: .content)
     }
 }

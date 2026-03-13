@@ -16,45 +16,52 @@ private let logger = Logger(subsystem: "com.swiftai", category: "SwiftAI")
 /// let response = try await ai.generate("Hello!")
 /// ```
 ///
-/// Multi-provider setup:
+/// Multi-provider with smart routing:
 /// ```swift
 /// let ai = try SwiftAI {
 ///     try $0.cloud(.anthropic(from: .keychain))
-///     $0.routing(.preferLocal)
+///     $0.local(OllamaProvider())
+///     $0.routing(.smart)
 ///     $0.spendingLimit(5.00)
+///     $0.privacy(.strict)
 /// }
 /// ```
 public final class SwiftAI: Sendable {
     private let providers: [any AIProvider]
     private let routingPolicy: RoutingPolicy
     private let spendingGuard: SpendingGuard?
+    private let router: SmartRouter
+    private let costTracker: CostTracker
 
     /// Create SwiftAI with a single provider
-    /// - Parameter provider: The AI provider to use
     public init(provider: any AIProvider) {
         self.providers = [provider]
         self.routingPolicy = .firstAvailable
         self.spendingGuard = nil
+        self.router = SmartRouter()
+        self.costTracker = CostTracker()
     }
 
     /// Create SwiftAI with full configuration (non-throwing)
-    /// - Parameter configure: A closure to configure providers, routing, and spending limits
     public init(_ configure: (inout Configuration) -> Void) {
         var config = Configuration()
         configure(&config)
         self.providers = config.providers
         self.routingPolicy = config.routingPolicy
         self.spendingGuard = config.spendingGuard
+        self.router = SmartRouter(privacyGuard: config.privacyGuard)
+        self.costTracker = CostTracker()
     }
 
     /// Create SwiftAI with full configuration (throwing, for Keychain-based providers)
-    /// - Parameter configure: A throwing closure to configure providers from secure storage
     public init(_ configure: (inout Configuration) throws -> Void) throws {
         var config = Configuration()
         try configure(&config)
         self.providers = config.providers
         self.routingPolicy = config.routingPolicy
         self.spendingGuard = config.spendingGuard
+        self.router = SmartRouter(privacyGuard: config.privacyGuard)
+        self.costTracker = CostTracker()
     }
 
     /// Generate a response from a simple text prompt
@@ -88,22 +95,45 @@ private extension SwiftAI {
     func performGenerate(messages: [Message], options: RequestOptions?) async throws -> AIResponse {
         try Task.checkCancellation()
 
-        let request = buildRequest(messages: messages, options: options)
-        let provider = try await selectProvider(for: request, options: options)
-        let reservation = try await reserveBudget(for: provider)
+        guard !providers.isEmpty else {
+            throw SwiftAIError.invalidRequest(reason: "No providers configured. Add at least one provider via cloud(), local(), or system().")
+        }
 
+        let request = buildRequest(messages: messages, options: options)
+        let decision = await routeRequest(request, options: options)
+
+        guard decision.isAvailable else {
+            throw SwiftAIError.allProvidersFailed(attempts: [])
+        }
+
+        let providerOrder = buildProviderOrder(from: decision)
+        var attempts: [(ProviderID, any Error & Sendable)] = []
+        let maxAttempts = routingPolicy.fallbackEnabled ? routingPolicy.maxRetries + 1 : 1
+
+        for providerID in providerOrder.prefix(maxAttempts) {
+            guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
+            do {
+                return try await executeGenerate(request: request, provider: provider)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                attempts.append((providerID, error))
+                logger.debug("Provider \(providerID.rawValue) failed, trying next")
+            }
+        }
+
+        throw SwiftAIError.allProvidersFailed(attempts: attempts)
+    }
+
+    func executeGenerate(request: AIRequest, provider: any AIProvider) async throws -> AIResponse {
+        let reservation = try await reserveBudget(for: provider)
         do {
             let response = try await withTaskCancellationHandler {
                 try await provider.generate(request)
             } onCancel: {
-                logger.debug("Generate request cancelled for provider \(provider.id.rawValue)")
+                logger.debug("Generate cancelled for \(provider.id.rawValue)")
             }
-
-            if let reservation, let usage = response.usage {
-                let actualCost = estimateCost(usage: usage, provider: provider)
-                await spendingGuard?.finalizeReservation(reservation, actualCost: actualCost)
-            }
-
+            await finalizeCost(reservation: reservation, usage: response.usage, provider: provider)
             return response
         } catch {
             if let reservation {
@@ -113,125 +143,71 @@ private extension SwiftAI {
         }
     }
 
-    func selectProvider(for request: AIRequest, options: RequestOptions?) async throws -> any AIProvider {
-        try Task.checkCancellation()
-
+    func routeRequest(_ request: AIRequest, options: RequestOptions?) async -> RoutingDecision {
         if let preferredID = options?.provider {
-            guard let provider = providers.first(where: { $0.id == preferredID }) else {
-                throw SwiftAIError.providerUnavailable(preferredID, reason: "Not configured")
-            }
-            guard await provider.isAvailable else {
-                throw SwiftAIError.providerUnavailable(preferredID, reason: "Currently unavailable")
-            }
-            return provider
-        }
-
-        if options?.privacyRequired == true {
-            return try await selectPrivateProvider()
-        }
-
-        return try await selectByPolicy()
-    }
-
-    func selectByPolicy() async throws -> any AIProvider {
-        switch routingPolicy {
-        case .firstAvailable:
-            return try await firstAvailableProvider(from: providers)
-
-        case .preferLocal:
-            let localProviders = providers.filter { $0.id.tier == .onDevice || $0.id.tier == .localServer }
-            if let local = try? await firstAvailableProvider(from: localProviders) {
-                return local
-            }
-            return try await firstAvailableProvider(from: providers)
-
-        case .preferCloud:
-            let cloudProviders = providers.filter { $0.id.tier == .cloud }
-            if let cloud = try? await firstAvailableProvider(from: cloudProviders) {
-                return cloud
-            }
-            return try await firstAvailableProvider(from: providers)
-
-        case .specific(let providerID):
-            guard let provider = providers.first(where: { $0.id == providerID }) else {
-                throw SwiftAIError.providerUnavailable(providerID, reason: "Not configured")
-            }
-            return provider
-        }
-    }
-
-    func selectPrivateProvider() async throws -> any AIProvider {
-        let privateProviders = providers.filter {
-            $0.capabilities.privacyLevel != .thirdPartyCloud
-        }
-        guard !privateProviders.isEmpty else {
-            throw SwiftAIError.invalidRequest(
-                reason: "Privacy required but no on-device or private cloud providers configured"
+            return RoutingDecision(
+                selectedProvider: preferredID,
+                reason: "Explicit provider selection",
+                factors: []
             )
         }
-        return try await firstAvailableProvider(from: privateProviders)
+
+        var policy = routingPolicy
+        if options?.privacyRequired == true {
+            policy.forceLocal = true
+        }
+
+        let budget = await spendingGuard?.remainingBudget
+        return await router.route(
+            request, policy: policy,
+            providers: providers, budgetRemaining: budget
+        )
     }
 
-    /// Check all candidate providers concurrently and return the first one that's available.
-    func firstAvailableProvider(from candidates: [any AIProvider]) async throws -> any AIProvider {
-        guard !candidates.isEmpty else {
-            throw SwiftAIError.allProvidersFailed(attempts: [])
+    func buildProviderOrder(from decision: RoutingDecision) -> [ProviderID] {
+        guard let selected = decision.selectedProvider else { return [] }
+        var order = [selected]
+        if routingPolicy.fallbackEnabled {
+            order.append(contentsOf: decision.alternativeProviders)
         }
-
-        // Single provider — skip TaskGroup overhead
-        if candidates.count == 1 {
-            let provider = candidates[0]
-            guard await provider.isAvailable else {
-                throw SwiftAIError.providerUnavailable(provider.id, reason: "Not available")
-            }
-            return provider
-        }
-
-        // Multiple providers — check availability concurrently
-        return try await withThrowingTaskGroup(of: (Int, Bool).self) { group in
-            for (index, provider) in candidates.enumerated() {
-                group.addTask {
-                    let available = await provider.isAvailable
-                    return (index, available)
-                }
-            }
-
-            // Collect results and pick the first available in original order
-            var availability = [Int: Bool]()
-            for try await (index, isAvailable) in group {
-                availability[index] = isAvailable
-            }
-
-            for (index, provider) in candidates.enumerated() {
-                if availability[index] == true {
-                    return provider
-                }
-            }
-
-            let attempts: [(ProviderID, any Error & Sendable)] = candidates.map { provider in
-                (provider.id, SwiftAIError.providerUnavailable(provider.id, reason: "Not available"))
-            }
-            throw SwiftAIError.allProvidersFailed(attempts: attempts)
-        }
+        return order
     }
 
     func buildRequest(messages: [Message], options: RequestOptions?) -> AIRequest {
-        AIRequest(
+        var request = AIRequest(
             messages: messages,
             model: options?.model,
             maxTokens: options?.maxTokens,
             temperature: options?.temperature,
             systemPrompt: options?.systemPrompt,
             tools: options?.tools,
-            responseFormat: options?.responseFormat
+            responseFormat: options?.responseFormat,
+            tags: options?.tags ?? []
         )
+        if let maxTokens = spendingGuard?.effectiveMaxTokens, request.maxTokens == nil {
+            request.maxTokens = maxTokens
+        }
+        return request
     }
 
     func reserveBudget(for provider: any AIProvider) async throws -> SpendingGuard.Reservation? {
         guard let spendingGuard, provider.id.tier == .cloud else { return nil }
-
         let estimatedCost = (provider.capabilities.costPerMillionInputTokens ?? 0) / 1_000_000 * 1000
         return try await spendingGuard.reserveBudget(estimatedCost: estimatedCost)
+    }
+
+    func finalizeCost(
+        reservation: SpendingGuard.Reservation?,
+        usage: TokenUsage?,
+        provider: any AIProvider
+    ) async {
+        if let reservation, let usage {
+            let actualCost = estimateCost(usage: usage, provider: provider)
+            await spendingGuard?.finalizeReservation(reservation, actualCost: actualCost)
+            await costTracker.recordUsage(provider: provider.id, usage: usage, cost: actualCost)
+        } else if let reservation {
+            await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
+        }
     }
 
     func estimateCost(usage: TokenUsage, provider: any AIProvider) -> Double {
@@ -248,34 +224,66 @@ private extension SwiftAI {
     ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    let request = self.buildRequest(messages: messages, options: options)
-                    let provider = try await self.selectProvider(for: request, options: options)
-                    let reservation = try await self.reserveBudget(for: provider)
-
-                    let stream = provider.stream(request)
-                    var lastUsage: TokenUsage?
-
-                    for try await chunk in stream {
-                        try Task.checkCancellation()
-                        if let usage = chunk.usage { lastUsage = usage }
-                        continuation.yield(chunk)
-                    }
-
-                    if let reservation, let usage = lastUsage {
-                        let actualCost = self.estimateCost(usage: usage, provider: provider)
-                        await self.spendingGuard?.finalizeReservation(reservation, actualCost: actualCost)
-                    } else if let reservation {
-                        await self.spendingGuard?.finalizeReservation(reservation, actualCost: 0)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+                guard !self.providers.isEmpty else {
+                    continuation.finish(throwing: SwiftAIError.invalidRequest(
+                        reason: "No providers configured. Add at least one provider via cloud(), local(), or system()."))
+                    return
                 }
+
+                let request = self.buildRequest(messages: messages, options: options)
+                let decision = await self.routeRequest(request, options: options)
+
+                guard decision.isAvailable else {
+                    continuation.finish(throwing: SwiftAIError.allProvidersFailed(attempts: []))
+                    return
+                }
+
+                let providerOrder = self.buildProviderOrder(from: decision)
+                let maxAttempts = self.routingPolicy.fallbackEnabled
+                    ? self.routingPolicy.maxRetries + 1 : 1
+                var lastError: (any Error)?
+
+                for providerID in providerOrder.prefix(maxAttempts) {
+                    guard let provider = self.providers.first(where: { $0.id == providerID })
+                    else { continue }
+                    do {
+                        try await self.executeStream(
+                            request: request, provider: provider, continuation: continuation
+                        )
+                        return
+                    } catch is CancellationError {
+                        continuation.finish(throwing: CancellationError())
+                        return
+                    } catch {
+                        lastError = error
+                        logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
+                    }
+                }
+
+                continuation.finish(throwing: lastError
+                    ?? SwiftAIError.allProvidersFailed(attempts: []))
             }
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
+    }
+
+    func executeStream(
+        request: AIRequest,
+        provider: any AIProvider,
+        continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
+    ) async throws {
+        let reservation = try await reserveBudget(for: provider)
+        let stream = provider.stream(request)
+        var lastUsage: TokenUsage?
+
+        for try await chunk in stream {
+            try Task.checkCancellation()
+            if let usage = chunk.usage { lastUsage = usage }
+            continuation.yield(chunk)
+        }
+
+        await finalizeCost(reservation: reservation, usage: lastUsage, provider: provider)
+        continuation.finish()
     }
 }
 
@@ -289,6 +297,7 @@ public struct RequestOptions: Sendable {
     public var responseFormat: ResponseFormat?
     public var provider: ProviderID?
     public var privacyRequired: Bool
+    public var tags: Set<RequestTag>
 
     public init(
         model: String? = nil,
@@ -298,7 +307,8 @@ public struct RequestOptions: Sendable {
         tools: [ToolDefinition]? = nil,
         responseFormat: ResponseFormat? = nil,
         provider: ProviderID? = nil,
-        privacyRequired: Bool = false
+        privacyRequired: Bool = false,
+        tags: Set<RequestTag> = []
     ) {
         self.model = model
         self.maxTokens = maxTokens
@@ -308,15 +318,8 @@ public struct RequestOptions: Sendable {
         self.responseFormat = responseFormat
         self.provider = provider
         self.privacyRequired = privacyRequired
+        self.tags = tags
     }
-}
-
-/// How to select which provider handles a request
-public enum RoutingPolicy: Sendable {
-    case firstAvailable
-    case preferLocal
-    case preferCloud
-    case specific(ProviderID)
 }
 
 /// Configuration for setting up SwiftAI with multiple providers
@@ -324,6 +327,7 @@ public struct Configuration: Sendable {
     var providers: [any AIProvider] = []
     var routingPolicy: RoutingPolicy = .firstAvailable
     var spendingGuard: SpendingGuard?
+    var privacyGuard: PrivacyGuard?
 
     /// Add a cloud provider (e.g., Anthropic, OpenAI)
     public mutating func cloud(_ provider: any AIProvider) {
@@ -331,9 +335,6 @@ public struct Configuration: Sendable {
     }
 
     /// Add a cloud provider from a factory (supports Keychain retrieval)
-    /// ```swift
-    /// try $0.cloud(.anthropic(from: .keychain))
-    /// ```
     public mutating func cloud(_ factory: ProviderFactory) throws {
         providers.append(try factory.createProvider())
     }
@@ -354,8 +355,12 @@ public struct Configuration: Sendable {
     }
 
     /// Set a spending limit in USD
-    public mutating func spendingLimit(_ amount: Double) {
-        spendingGuard = SpendingGuard(budgetLimit: amount)
+    public mutating func spendingLimit(_ amount: Double, action: LimitAction = .block) {
+        spendingGuard = SpendingGuard(budgetLimit: amount, limitAction: action)
+    }
+
+    /// Set privacy enforcement level
+    public mutating func privacy(_ guard: PrivacyGuard) {
+        privacyGuard = `guard`
     }
 }
-

@@ -70,8 +70,12 @@ struct GeminiMapper: Sendable {
         let usage = extractUsage(from: json)
         let finishReason = mapFinishReason(firstCandidate["finishReason"] as? String)
 
+        let responseId = (json["responseId"] as? String)
+            ?? (json["id"] as? String)
+            ?? UUID().uuidString
+
         return AIResponse(
-            id: UUID().uuidString,
+            id: responseId,
             content: textContent,
             model: defaultModel.rawValue,
             provider: .gemini,

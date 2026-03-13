@@ -4,7 +4,7 @@
 import Foundation
 
 /// A complete response from an AI provider
-public struct AIResponse: Sendable {
+public struct AIResponse: Sendable, Equatable {
     public let id: String
     public let content: String
     public let role: Role

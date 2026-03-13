@@ -20,6 +20,7 @@ let package = Package(
             path: "Sources/SwiftAI"),
         .testTarget(
             name: "SwiftAITests",
-            dependencies: ["SwiftAI"]),
+            dependencies: ["SwiftAI"],
+            path: "Tests/SwiftAITests"),
     ]
 )

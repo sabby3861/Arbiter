@@ -13,6 +13,7 @@ public struct AIRequest: Sendable {
     public var systemPrompt: String?
     public var tools: [ToolDefinition]?
     public var responseFormat: ResponseFormat?
+    public var tags: Set<RequestTag>
 
     public init(
         messages: [Message],
@@ -22,7 +23,8 @@ public struct AIRequest: Sendable {
         topP: Double? = nil,
         systemPrompt: String? = nil,
         tools: [ToolDefinition]? = nil,
-        responseFormat: ResponseFormat? = nil
+        responseFormat: ResponseFormat? = nil,
+        tags: Set<RequestTag> = []
     ) {
         self.messages = messages
         self.model = model
@@ -32,6 +34,7 @@ public struct AIRequest: Sendable {
         self.systemPrompt = systemPrompt
         self.tools = tools
         self.responseFormat = responseFormat
+        self.tags = tags
     }
 
     /// Start building a chat request with a single user message
@@ -85,6 +88,13 @@ public struct AIRequest: Sendable {
     public func withResponseFormat(_ format: ResponseFormat) -> AIRequest {
         var copy = self
         copy.responseFormat = format
+        return copy
+    }
+
+    /// Add privacy/classification tags for routing decisions
+    public func withTags(_ tags: Set<RequestTag>) -> AIRequest {
+        var copy = self
+        copy.tags = tags
         return copy
     }
 }

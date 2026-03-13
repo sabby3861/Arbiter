@@ -4,7 +4,7 @@
 import Foundation
 
 /// Describes what an AI provider can do
-public struct ProviderCapabilities: Sendable {
+public struct ProviderCapabilities: Sendable, Equatable {
     public let supportedTasks: Set<AITask>
     public let maxContextTokens: Int
     public let supportsStreaming: Bool
