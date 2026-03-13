@@ -61,4 +61,20 @@ public struct ProviderFactory: Sendable {
             OllamaProvider(baseURL: baseURL, defaultModel: model)
         }
     }
+
+    /// Create an MLX on-device provider (no API key needed)
+    public static func mlx(
+        _ configuration: MLXProviderConfiguration = .auto
+    ) -> ProviderFactory {
+        ProviderFactory {
+            MLXProvider(configuration)
+        }
+    }
+
+    /// Create an Apple Foundation Models provider (no API key needed)
+    public static func appleFoundation() -> ProviderFactory {
+        ProviderFactory {
+            AppleFoundationProvider()
+        }
+    }
 }

@@ -221,4 +221,26 @@ struct IntegrationTests {
         let request = AIRequest.chat("Test")
         #expect(request.tags.isEmpty)
     }
+
+    @Test func mlxFactoryCreatesProvider() throws {
+        let factory = ProviderFactory.mlx(.auto)
+        let provider = try factory.createProvider()
+        #expect(provider.id == .mlx)
+    }
+
+    @Test func appleFoundationFactoryCreatesProvider() throws {
+        let factory = ProviderFactory.appleFoundation()
+        let provider = try factory.createProvider()
+        #expect(provider.id == .appleFoundation)
+    }
+
+    @Test func threeTierConfigurationCompiles() {
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(id: .anthropic))
+            $0.local(MLXProvider(.auto))
+            $0.system(AppleFoundationProvider())
+            $0.routing(.smart)
+        }
+        _ = ai
+    }
 }
