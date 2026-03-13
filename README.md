@@ -24,6 +24,8 @@ let ai = try SwiftAI {
     try $0.cloud(.openAI(from: .keychain))
     try $0.cloud(.gemini(from: .keychain))
     $0.local(OllamaProvider())
+    $0.local(MLXProvider(.auto))
+    $0.system(AppleFoundationProvider())
     $0.routing(.smart)
     $0.spendingLimit(5.00)
     $0.privacy(.strict)
@@ -85,6 +87,47 @@ Each factor produces a score, and the routing **strategy** applies different wei
 .priority([.ollama, .anthropic])  // Try in order, fail over to next
 ```
 
+### How Smart Routing Works — Concrete Example
+
+When you send **"Classify this text as positive/negative"**, here's how the router decides:
+
+| Provider | Capability | Quality | Latency | Privacy | Cost | **Total** |
+|----------|-----------|---------|---------|---------|------|-----------|
+| Apple FM | 10 (chat ✓) | 4 (free) | 16 (fast) | 20 (on-device) | 20 (free) | **14.0** |
+| MLX | 10 (chat ✓) | 4 (free) | 10 (moderate) | 20 (on-device) | 20 (free) | **12.8** |
+| Anthropic | 15 (chat+tools ✓) | 16 (premium) | 16 (fast) | 5 (cloud) | 8 (mid) | **12.0** |
+
+Result: **Apple FM wins** — it's free, fast, on-device, and sufficient for classification.
+
+For **"Write a production-grade REST API with error handling"**, the scores shift:
+
+| Provider | Capability | Quality | Latency | Privacy | Cost | **Total** |
+|----------|-----------|---------|---------|---------|------|-----------|
+| Anthropic | 15 (tools ✓) | 16 (premium) | 16 (fast) | 5 (cloud) | 8 (mid) | **12.0** |
+| MLX | 10 (code ✓) | 4 (free) | 10 (moderate) | 20 (on-device) | 20 (free) | **12.8** |
+| Apple FM | 10 (no code gen) | 4 (free) | 16 (fast) | 20 (on-device) | 20 (free) | **14.0** |
+
+With `.qualityFirst` strategy, quality weight triples → **Anthropic wins** for complex tasks.
+
+### Three-Tier Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Smart Router                         │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  │
+│  │Capability│  │  Privacy  │  │  Budget  │  │ Thermal │  │
+│  │ Matcher  │  │  Guard    │  │  Check   │  │  Check  │  │
+│  └─────────┘  └──────────┘  └──────────┘  └─────────┘  │
+└──────┬──────────────┬──────────────┬───────────────┬─────┘
+       │              │              │               │
+┌──────▼──────┐┌──────▼──────┐┌──────▼──────┐┌──────▼──────┐
+│   Tier 1    ││   Tier 2    ││   Tier 3    ││   Tier 4    │
+│  Apple FM   ││    MLX      ││   Ollama    ││   Cloud     │
+│ Free, Fast  ││Free, Medium ││Free, Local  ││ Paid, Best  │
+│  Limited    ││   Good      ││   Good      ││   Quality   │
+└─────────────┘└─────────────┘└─────────────┘└─────────────┘
+```
+
 ### Environment-Aware Adjustments
 
 After scoring, the router adjusts for real-time conditions:
@@ -123,10 +166,12 @@ When the top-scored provider fails, the router automatically tries alternatives:
 let ai = SwiftAI {
     $0.cloud(anthropicProvider)
     $0.cloud(openAIProvider)
-    $0.local(ollamaProvider)
+    $0.local(OllamaProvider())
+    $0.local(MLXProvider(.auto))
+    $0.system(AppleFoundationProvider())
     $0.routing(.smart)  // fallbackEnabled is true by default
 }
-// If Anthropic is down, tries OpenAI, then Ollama
+// If Anthropic is down → tries OpenAI → Ollama → MLX → Apple FM
 ```
 
 ### Cost Tracking
@@ -144,12 +189,52 @@ let ai = SwiftAI {
 
 | Provider | Status | Privacy | Capabilities |
 |----------|--------|---------|--------------|
-| Anthropic Claude | Ready | Cloud | Chat, Code, Vision, Tools |
-| OpenAI GPT | Ready | Cloud | Chat, Code, Vision, Tools |
-| Google Gemini | Ready | Cloud | Chat, Code, Vision, Tools |
-| Ollama | Ready | Local Server | Chat, Code, Vision |
-| MLX | Planned | On-Device | Chat, Code |
-| Apple Foundation Models | Planned | On-Device | Chat |
+| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
+| MLX | ✅ Ready | On-Device | Chat, Code, Summarization |
+| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization, Tools |
+
+## On-Device Providers
+
+### MLX (Apple Silicon)
+
+Runs open-source models locally via [mlx-swift](https://github.com/ml-explore/mlx-swift). Zero network, zero cost, complete privacy.
+
+```swift
+// Auto-select best model for this device
+$0.local(MLXProvider(.auto))
+
+// Or pick a specific model
+$0.local(MLXProvider(.model("mlx-community/Qwen2.5-7B-Instruct-4bit")))
+```
+
+The MLX model registry automatically recommends models based on device RAM:
+
+| Device RAM | Recommended Models | Parameters |
+|-----------|-------------------|------------|
+| 4-8 GB | SmolLM2, Qwen 2.5 0.5-3B, Llama 3.2 1-3B | 360M – 3B |
+| 8-16 GB | Qwen 2.5 7B, Llama 3.1 8B, Mistral 7B, Gemma 2 9B | 7B – 9B |
+| 16-32 GB | Qwen 2.5 14B, Mistral Nemo 12B | 12B – 14B |
+| 32+ GB | Qwen 2.5 32B, Llama 3.3 70B | 32B – 70B |
+
+### Apple Foundation Models
+
+Uses Apple's built-in on-device model via the FoundationModels framework. Requires iOS 26+ / macOS 26+ with Apple Intelligence enabled.
+
+```swift
+$0.system(AppleFoundationProvider())
+```
+
+Check availability in SwiftUI:
+
+```swift
+Text("AI Feature")
+    .appleFoundationAvailable {
+        Text("Requires Apple Intelligence")
+    }
+```
 
 ## Why SwiftAI?
 
@@ -173,11 +258,14 @@ dependencies: [
 ]
 ```
 
+MLX support is included as an optional dependency — it compiles only on macOS and iOS with Apple Silicon. If mlx-swift is not resolved, the MLX provider gracefully reports as unavailable.
+
 ## Requirements
 
 - Swift 6.1+
 - iOS 17+ / macOS 14+ / visionOS 1+
-- No external dependencies
+- MLX provider: Apple Silicon (M1+) with 4GB+ RAM
+- Apple FM provider: iOS 26+ / macOS 26+ with Apple Intelligence enabled
 
 ## Security
 
@@ -205,8 +293,8 @@ dependencies: [
 - [x] Cost tracking per provider
 - [x] Fallback chain with automatic retry
 - [x] Environment-aware routing (connectivity, thermal, budget)
-- [ ] MLX on-device provider
-- [ ] Apple Foundation Models provider
+- [x] MLX on-device provider
+- [x] Apple Foundation Models provider
 - [ ] SwiftUI components
 
 ## License
