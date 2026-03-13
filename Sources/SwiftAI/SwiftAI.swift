@@ -376,16 +376,45 @@ public struct ProviderFactory: Sendable {
         try factory()
     }
 
-    /// Create an Anthropic provider with the API key loaded from the Keychain
+    /// Create an Anthropic provider from secure key storage
     public static func anthropic(
         from source: KeySource,
         model: AnthropicModel = .claude4Sonnet
     ) -> ProviderFactory {
         ProviderFactory {
-            switch source {
-            case .keychain:
-                return try AnthropicProvider(keyStorage: .anthropic, defaultModel: model)
-            }
+            try AnthropicProvider(keyStorage: .anthropic, defaultModel: model)
+        }
+    }
+
+    /// Create an OpenAI provider from secure key storage
+    public static func openAI(
+        from source: KeySource,
+        baseURL: URL? = nil,
+        organization: String? = nil,
+        model: OpenAIModel = .gpt4o
+    ) -> ProviderFactory {
+        ProviderFactory {
+            try OpenAIProvider(keyStorage: .openAI, baseURL: baseURL, organization: organization, defaultModel: model)
+        }
+    }
+
+    /// Create a Gemini provider from secure key storage
+    public static func gemini(
+        from source: KeySource,
+        model: GeminiModel = .flash25
+    ) -> ProviderFactory {
+        ProviderFactory {
+            try GeminiProvider(keyStorage: .gemini, defaultModel: model)
+        }
+    }
+
+    /// Create an Ollama provider (no API key needed)
+    public static func ollama(
+        baseURL: URL? = nil,
+        model: String = "llama3.2"
+    ) -> ProviderFactory {
+        ProviderFactory {
+            OllamaProvider(baseURL: baseURL, defaultModel: model)
         }
     }
 }

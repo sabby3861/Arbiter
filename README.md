@@ -9,19 +9,21 @@ SwiftAI is a unified AI runtime for Swift that lets you call any AI provider thr
 ```swift
 import SwiftAI
 
-let ai = SwiftAI(provider: AnthropicProvider(apiKey: "your-key"))
+// Keychain-stored key (recommended)
+let ai = try SwiftAI {
+    try $0.cloud(.anthropic(from: .keychain))
+}
 let response = try await ai.generate("Explain Swift concurrency in one sentence.")
-print(response.content)
 ```
 
-## Multi-Provider Vision
+## Multi-Provider Setup
 
 ```swift
-let ai = SwiftAI {
-    $0.cloud(AnthropicProvider(apiKey: anthropicKey))
-    // $0.cloud(OpenAIProvider(apiKey: openAIKey))       // Coming soon
-    // $0.local(OllamaProvider())                        // Coming soon
-    // $0.system(AppleFoundationProvider())               // Coming soon
+let ai = try SwiftAI {
+    try $0.cloud(.anthropic(from: .keychain))
+    try $0.cloud(.openAI(from: .keychain))
+    try $0.cloud(.gemini(from: .keychain))
+    $0.local(OllamaProvider())
     $0.routing(.preferLocal)
     $0.spendingLimit(5.00)
 }
@@ -29,7 +31,7 @@ let ai = SwiftAI {
 // SwiftAI picks the best available provider
 let response = try await ai.generate("Hello!")
 
-// Force privacy — only on-device providers
+// Force privacy — only on-device/local providers
 let options = RequestOptions(privacyRequired: true)
 let privateResponse = try await ai.generate("Sensitive query", options: options)
 ```
@@ -39,7 +41,7 @@ let privateResponse = try await ai.generate("Sensitive query", options: options)
 ```swift
 let stream = ai.stream("Write a haiku about Swift.")
 for try await chunk in stream {
-    print(chunk.delta, terminator: "")
+    // chunk.delta contains the incremental text
 }
 ```
 
@@ -55,14 +57,14 @@ try await session.send("What is SwiftUI?", using: ai)
 
 ## Supported Providers
 
-| Provider | Status | Privacy | Type |
-|----------|--------|---------|------|
+| Provider | Status | Privacy | Capabilities |
+|----------|--------|---------|--------------|
 | Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
-| OpenAI GPT | 🔜 Next | Cloud | Chat, Code, Vision, Tools |
-| Google Gemini | 🔜 Planned | Cloud | Chat, Code, Vision |
-| Ollama | 🔜 Planned | Local Server | Chat, Code |
-| MLX | 🔜 Planned | On-Device | Chat, Code |
-| Apple Foundation Models | 🔜 Planned | On-Device | Chat |
+| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
+| MLX | Planned | On-Device | Chat, Code |
+| Apple Foundation Models | Planned | On-Device | Chat |
 
 ## Why SwiftAI?
 
@@ -70,20 +72,30 @@ try await session.send("What is SwiftUI?", using: ai)
 
 Modern apps need AI from three different places:
 
-1. **Cloud APIs** (Anthropic, OpenAI) — most capable, but require network and cost money
+1. **Cloud APIs** (Anthropic, OpenAI, Gemini) — most capable, but require network and cost money
 2. **Local servers** (Ollama) — good for development and privacy, but need setup
 3. **On-device models** (MLX, Apple Foundation Models) — instant, private, free, but less capable
 
 Each has a different SDK, different data types, different error handling. SwiftAI unifies all three behind a single protocol, so your app code stays clean regardless of which tier you're using.
 
-### Smart Routing (Coming Soon)
+### Smart Routing
 
-SwiftAI will automatically pick the best provider based on:
+SwiftAI automatically picks the best provider based on:
 - **Privacy requirements** — sensitive data stays on-device
 - **Cost budgets** — spending guards prevent bill shock
-- **Latency needs** — prefer local for real-time interactions
-- **Capability matching** — route to providers that support the task
 - **Availability** — fall back gracefully when providers are down
+
+```swift
+// Prefer local models, fall back to cloud
+let ai = SwiftAI {
+    $0.local(OllamaProvider())
+    $0.routing(.preferLocal)
+}
+
+// Route to a specific provider
+let options = RequestOptions(provider: .openAI)
+let response = try await ai.generate("Hello!", options: options)
+```
 
 ## Installation
 
@@ -107,20 +119,23 @@ dependencies: [
 - Spending guards to prevent budget overruns
 - Privacy routing ensures sensitive data never leaves the device
 - API keys automatically redacted from logs
+- Compile-time deprecation warnings on raw API key strings
 
 ## Roadmap
 
 - [x] Core protocol layer
 - [x] Anthropic Claude provider
-- [x] Streaming with SSE parsing
+- [x] OpenAI provider (including compatible APIs: Groq, Together, Perplexity)
+- [x] Google Gemini provider
+- [x] Ollama local provider
+- [x] Streaming (SSE + NDJSON)
+- [x] Tool calling / function calling
 - [x] Conversation session management
 - [x] Spending guards
-- [ ] OpenAI provider
-- [ ] Gemini provider
-- [ ] Ollama provider
+- [x] Keychain-based secure key storage
+- [x] Multi-provider routing (first available, prefer local, prefer cloud, specific)
 - [ ] MLX on-device provider
 - [ ] Apple Foundation Models provider
-- [ ] Smart routing engine
 - [ ] SwiftUI components
 
 ## License
