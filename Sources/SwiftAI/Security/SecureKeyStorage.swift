@@ -4,9 +4,18 @@
 import Foundation
 import Security
 
-/// Stores and retrieves API keys securely in the system Keychain
+/// Stores and retrieves API keys securely in the system Keychain.
+///
+/// Usage:
+/// ```swift
+/// // Store a key once (e.g., from a server config endpoint or onboarding flow)
+/// try SecureKeyStorage.store(key: "sk-ant-...", forProvider: .anthropic)
+///
+/// // Later, create a provider that reads from Keychain
+/// let provider = try AnthropicProvider(keyStorage: .anthropic)
+/// ```
 public struct SecureKeyStorage: Sendable {
-    private static let servicePrefix = "com.swiftai.provider."
+    private static let servicePrefix = "com.swiftai.keys."
 
     /// Store an API key for a provider in the Keychain
     /// - Parameters:
@@ -16,7 +25,6 @@ public struct SecureKeyStorage: Sendable {
         let service = servicePrefix + provider.rawValue
         let keyData = Data(key.utf8)
 
-        // Delete any existing item first
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -26,8 +34,9 @@ public struct SecureKeyStorage: Sendable {
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
+            kSecAttrAccount as String: provider.rawValue,
             kSecValueData as String: keyData,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
 
         let status = SecItemAdd(addQuery as CFDictionary, nil)
@@ -59,6 +68,22 @@ public struct SecureKeyStorage: Sendable {
         }
 
         return key
+    }
+
+    /// Check if a key exists for a provider without retrieving it
+    /// - Parameter provider: Which provider to check
+    /// - Returns: `true` if a key is stored for this provider
+    public static func hasKey(forProvider provider: ProviderID) -> Bool {
+        let service = servicePrefix + provider.rawValue
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnData as String: false,
+        ]
+
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        return status == errSecSuccess
     }
 
     /// Delete a stored API key for a provider

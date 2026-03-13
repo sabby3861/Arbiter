@@ -8,17 +8,20 @@ private let logger = Logger(subsystem: "com.swiftai", category: "SwiftAI")
 
 /// The main entry point for SwiftAI — a unified runtime for multiple AI providers.
 ///
-/// Quick start with a single provider:
+/// Quick start with Keychain-stored key (recommended):
 /// ```swift
-/// let ai = SwiftAI(provider: AnthropicProvider(apiKey: key))
+/// let ai = try SwiftAI {
+///     try $0.cloud(.anthropic(from: .keychain))
+/// }
 /// let response = try await ai.generate("Hello!")
 /// ```
 ///
 /// Multi-provider setup:
 /// ```swift
-/// let ai = SwiftAI {
-///     $0.cloud(AnthropicProvider(apiKey: key))
-///     $0.routing(.firstAvailable)
+/// let ai = try SwiftAI {
+///     try $0.cloud(.anthropic(from: .keychain))
+///     $0.routing(.preferLocal)
+///     $0.spendingLimit(5.00)
 /// }
 /// ```
 public final class SwiftAI: Sendable {
@@ -34,11 +37,21 @@ public final class SwiftAI: Sendable {
         self.spendingGuard = nil
     }
 
-    /// Create SwiftAI with full configuration
+    /// Create SwiftAI with full configuration (non-throwing)
     /// - Parameter configure: A closure to configure providers, routing, and spending limits
     public init(_ configure: (inout Configuration) -> Void) {
         var config = Configuration()
         configure(&config)
+        self.providers = config.providers
+        self.routingPolicy = config.routingPolicy
+        self.spendingGuard = config.spendingGuard
+    }
+
+    /// Create SwiftAI with full configuration (throwing, for Keychain-based providers)
+    /// - Parameter configure: A throwing closure to configure providers from secure storage
+    public init(_ configure: (inout Configuration) throws -> Void) throws {
+        var config = Configuration()
+        try configure(&config)
         self.providers = config.providers
         self.routingPolicy = config.routingPolicy
         self.spendingGuard = config.spendingGuard
@@ -317,6 +330,14 @@ public struct Configuration: Sendable {
         providers.append(provider)
     }
 
+    /// Add a cloud provider from a factory (supports Keychain retrieval)
+    /// ```swift
+    /// try $0.cloud(.anthropic(from: .keychain))
+    /// ```
+    public mutating func cloud(_ factory: ProviderFactory) throws {
+        providers.append(try factory.createProvider())
+    }
+
     /// Add a local server provider (e.g., Ollama)
     public mutating func local(_ provider: any AIProvider) {
         providers.append(provider)
@@ -335,5 +356,36 @@ public struct Configuration: Sendable {
     /// Set a spending limit in USD
     public mutating func spendingLimit(_ amount: Double) {
         spendingGuard = SpendingGuard(budgetLimit: amount)
+    }
+}
+
+/// Where to load the API key from
+public enum KeySource: Sendable {
+    case keychain
+}
+
+/// Factory for creating providers from secure key sources
+public struct ProviderFactory: Sendable {
+    private let factory: @Sendable () throws -> any AIProvider
+
+    private init(_ factory: @escaping @Sendable () throws -> any AIProvider) {
+        self.factory = factory
+    }
+
+    func createProvider() throws -> any AIProvider {
+        try factory()
+    }
+
+    /// Create an Anthropic provider with the API key loaded from the Keychain
+    public static func anthropic(
+        from source: KeySource,
+        model: AnthropicModel = .claude4Sonnet
+    ) -> ProviderFactory {
+        ProviderFactory {
+            switch source {
+            case .keychain:
+                return try AnthropicProvider(keyStorage: .anthropic, defaultModel: model)
+            }
+        }
     }
 }
