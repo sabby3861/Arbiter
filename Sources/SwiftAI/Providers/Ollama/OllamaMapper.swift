@@ -66,6 +66,7 @@ struct OllamaMapper: Sendable {
         let message = json["message"] as? [String: Any] ?? [:]
         let textContent = message["content"] as? String ?? ""
         let usage = extractUsage(from: json)
+        let finishReason = mapFinishReason(from: json)
 
         return AIResponse(
             id: UUID().uuidString,
@@ -73,7 +74,7 @@ struct OllamaMapper: Sendable {
             model: model,
             provider: .ollama,
             usage: usage,
-            finishReason: .complete
+            finishReason: finishReason
         )
     }
 
@@ -147,14 +148,23 @@ private extension OllamaMapper {
         }
     }
 
+    func mapFinishReason(from json: [String: Any]) -> FinishReason {
+        guard let reason = json["done_reason"] as? String else { return .complete }
+        switch reason {
+        case "length": return .maxTokens
+        case "stop": return .complete
+        default: return .complete
+        }
+    }
+
     func extractUsage(from json: [String: Any]) -> TokenUsage? {
         let promptEvalCount = json["prompt_eval_count"] as? Int
         let evalCount = json["eval_count"] as? Int
 
-        guard let input = promptEvalCount, let output = evalCount else {
+        guard promptEvalCount != nil || evalCount != nil else {
             return nil
         }
-        return TokenUsage(inputTokens: input, outputTokens: output)
+        return TokenUsage(inputTokens: promptEvalCount ?? 0, outputTokens: evalCount ?? 0)
     }
 
     func parseJSON(_ data: Data) throws -> [String: Any] {

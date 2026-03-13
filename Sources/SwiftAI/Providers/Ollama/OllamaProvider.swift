@@ -125,7 +125,16 @@ public struct OllamaProvider: AIProvider, Sendable {
     /// List models installed on the Ollama server
     public func listModels() async throws -> [String] {
         let tagsURL = baseURL.appendingPathComponent("api/tags")
-        let (data, response) = try await session.data(for: URLRequest(url: tagsURL))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: URLRequest(url: tagsURL))
+        } catch let urlError as URLError {
+            throw SwiftAIError.providerUnavailable(.ollama, reason: "Server not reachable: \(urlError.localizedDescription)")
+        } catch {
+            throw SwiftAIError.networkError(underlying: URLError(.unknown))
+        }
 
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw SwiftAIError.providerUnavailable(.ollama, reason: "Failed to list models")

@@ -156,10 +156,9 @@ private extension GeminiProvider {
         components.scheme = baseURL.scheme
         components.host = baseURL.host
         components.path = path
-        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
 
         if stream {
-            components.queryItems?.append(URLQueryItem(name: "alt", value: "sse"))
+            components.queryItems = [URLQueryItem(name: "alt", value: "sse")]
         }
 
         guard let requestURL = components.url else {
@@ -169,6 +168,7 @@ private extension GeminiProvider {
         var urlRequest = URLRequest(url: requestURL)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         urlRequest.httpBody = body
         return urlRequest
     }

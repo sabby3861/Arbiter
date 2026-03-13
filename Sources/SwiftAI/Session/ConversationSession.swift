@@ -16,7 +16,13 @@ import Observation
 /// ```
 @MainActor
 @Observable
-public final class ConversationSession {
+public final class ConversationSession: Identifiable {
+    /// Stable identifier for this conversation
+    public let id: UUID = UUID()
+
+    /// When this session was created
+    public let createdAt: Date = Date()
+
     /// All messages in the conversation
     public private(set) var messages: [Message] = []
 
@@ -81,13 +87,13 @@ public final class ConversationSession {
         let mergedOptions = mergeOptions(options)
 
         return AsyncThrowingStream { continuation in
-            let task = Task { [weak self] in
+            let task = Task { [self] in
                 var lastContent = ""
                 defer {
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        if !lastContent.isEmpty {
-                            self.messages.append(Message.assistant(lastContent))
+                    let content = lastContent
+                    Task { @MainActor [self] in
+                        if !content.isEmpty {
+                            self.messages.append(Message.assistant(content))
                         }
                         self.isGenerating = false
                         self.activeStreamTask = nil
@@ -142,12 +148,12 @@ private extension ConversationSession {
     }
 
     func trimToFitTokenWindow() {
-        while messages.count > 2 && estimateTokens(for: messages) > maxTokenEstimate {
-            if let firstNonSystemIndex = messages.firstIndex(where: { $0.role != .system }) {
-                messages.remove(at: firstNonSystemIndex)
-            } else {
-                break
-            }
+        // Keep at least the most recent message (user's latest input)
+        while messages.count > 1 && estimateTokens(for: messages) > maxTokenEstimate {
+            // Find the oldest non-system message that isn't the last message
+            let removable = messages.dropLast().firstIndex(where: { $0.role != .system })
+            guard let index = removable else { break }
+            messages.remove(at: index)
         }
     }
 
