@@ -192,8 +192,11 @@ private extension SmartRouter {
         factors: inout [RoutingFactor]
     ) {
         if device.isThermallyConstrained {
-            for i in scores.indices where scores[i].providerID.tier != .cloud {
-                scores[i].adjustedScore *= 0.5
+            for i in scores.indices {
+                let tier = scores[i].providerID.tier
+                if tier == .onDevice || tier == .localServer || tier == .system {
+                    scores[i].adjustedScore *= 0.5
+                }
             }
             factors.append(.thermal(
                 state: device.thermalLevel.rawValue,
