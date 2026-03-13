@@ -24,7 +24,27 @@ public struct ConnectivityState: Sendable {
 struct ConnectivityMonitor: Sendable {
     private static let monitorQueue = DispatchQueue(label: "com.swiftai.connectivity")
 
+    /// Check current connectivity with a 5-second timeout.
+    ///
+    /// If the monitor fails to report within the timeout, returns `.offline`
+    /// to prevent indefinite hanging.
     static func checkConnectivity() async -> ConnectivityState {
+        await withTaskGroup(of: ConnectivityState.self) { group in
+            group.addTask {
+                await monitorConnectivity()
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return .offline
+            }
+
+            let result = await group.next() ?? .offline
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private static func monitorConnectivity() async -> ConnectivityState {
         await withCheckedContinuation { continuation in
             let monitor = NWPathMonitor()
             let guard_ = ResumeGuard()
@@ -51,6 +71,9 @@ struct ConnectivityMonitor: Sendable {
 }
 
 /// Thread-safe guard ensuring a continuation is resumed exactly once.
+///
+/// Safety: `@unchecked Sendable` is justified because all mutable state (`resumed`)
+/// is protected by `NSLock`, ensuring exclusive access across threads.
 private final class ResumeGuard: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false

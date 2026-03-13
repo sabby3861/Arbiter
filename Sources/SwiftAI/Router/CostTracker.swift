@@ -37,6 +37,7 @@ public actor CostTracker {
 
     /// Record usage after a successful request
     public func recordUsage(provider: ProviderID, usage: TokenUsage, cost: Double) {
+        resetDayIfNeeded()
         spendByProvider[provider, default: 0] += cost
         dailyRequestCount += 1
         persist()
@@ -48,8 +49,7 @@ public actor CostTracker {
         request: AIRequest,
         capabilities: ProviderCapabilities
     ) -> Double {
-        let inputChars = request.messages.reduce(0) { $0 + ($1.content.text?.count ?? 0) }
-        let estimatedInputTokens = max(inputChars / 4, 1)
+        let estimatedInputTokens = TokenEstimator.estimateTokens(for: request.messages)
         let estimatedOutputTokens = request.maxTokens ?? 1024
 
         let inputCost = (capabilities.costPerMillionInputTokens ?? 0) / 1_000_000
@@ -92,6 +92,14 @@ private extension CostTracker {
 
     var currentDayKey: String {
         Self.dayFormatter.string(from: Date())
+    }
+
+    func resetDayIfNeeded() {
+        let today = currentDayKey
+        if lastResetDay != today {
+            dailyRequestCount = 0
+            lastResetDay = today
+        }
     }
 
     func persist() {

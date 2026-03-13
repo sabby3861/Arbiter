@@ -78,7 +78,7 @@ enum FoundationModelsAvailabilityBridge {
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// SwiftUI view modifier that shows content only when Apple Foundation Models are available.
+/// SwiftUI view modifier that gates content on Apple Foundation Models availability.
 ///
 /// ```swift
 /// Text("AI-powered feature")
@@ -86,7 +86,6 @@ import SwiftUI
 ///         Text("Requires Apple Intelligence")
 ///     }
 /// ```
-/// SwiftUI view modifier that gates content on Apple Foundation Models availability.
 public struct AppleFoundationAvailabilityModifier<Fallback: View>: ViewModifier {
     @State private var isAvailable = false
     private let fallback: () -> Fallback

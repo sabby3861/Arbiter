@@ -282,6 +282,8 @@ private extension OpenAIMapper {
             return json
         } catch let swiftAIError as SwiftAIError {
             throw swiftAIError
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             logger.error("Failed to parse response JSON")
             throw SwiftAIError.decodingFailed(context: "Invalid JSON: \(error.localizedDescription)")

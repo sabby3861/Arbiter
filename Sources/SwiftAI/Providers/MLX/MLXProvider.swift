@@ -32,6 +32,19 @@ import MLX
 import MLXLMCommon
 import MLXLLM
 
+/// Thread-safe cache for loaded MLX model containers.
+private actor ModelContainerCache {
+    private var cache: [String: ModelContainer] = [:]
+
+    func get(for modelId: String) -> ModelContainer? {
+        cache[modelId]
+    }
+
+    func set(_ container: ModelContainer, for modelId: String) {
+        cache[modelId] = container
+    }
+}
+
 /// On-device AI provider using MLX Swift for Apple Silicon inference.
 ///
 /// Runs models locally with zero network dependency and complete data privacy.
@@ -46,6 +59,7 @@ public struct MLXProvider: AIProvider, Sendable {
     private let configuration: MLXProviderConfiguration
     private let modelRegistry: MLXModelRegistry
     private let resolvedModelId: String
+    private let containerCache = ModelContainerCache()
 
     public var capabilities: ProviderCapabilities {
         let modelInfo = modelRegistry.modelInfo(for: resolvedModelId)
@@ -99,7 +113,7 @@ public struct MLXProvider: AIProvider, Sendable {
 
         let container = try await loadModel()
         let chatSession = ChatSession(container, instructions: request.systemPrompt)
-        let prompt = extractUserPrompt(from: request)
+        let prompt = buildConversationPrompt(from: request)
 
         do {
             let content = try await chatSession.respond(to: prompt)
@@ -136,17 +150,35 @@ public struct MLXProvider: AIProvider, Sendable {
 
 private extension MLXProvider {
     func loadModel() async throws -> ModelContainer {
+        if let cached = await containerCache.get(for: resolvedModelId) {
+            return cached
+        }
         do {
-            return try await loadModelContainer(id: resolvedModelId)
+            let container = try await loadModelContainer(id: resolvedModelId)
+            await containerCache.set(container, for: resolvedModelId)
+            return container
         } catch {
             logger.error("Failed to load MLX model '\(self.resolvedModelId)': \(error.localizedDescription)")
             throw SwiftAIError.modelNotFound(resolvedModelId)
         }
     }
 
-    func extractUserPrompt(from request: AIRequest) -> String {
-        let lastUserMessage = request.messages.last(where: { $0.role == .user })
-        return lastUserMessage?.content.text ?? ""
+    func buildConversationPrompt(from request: AIRequest) -> String {
+        var parts: [String] = []
+        for message in request.messages {
+            guard let text = message.content.text else { continue }
+            switch message.role {
+            case .user:
+                parts.append("User: \(text)")
+            case .assistant:
+                parts.append("Assistant: \(text)")
+            case .system:
+                parts.append("System: \(text)")
+            case .tool:
+                parts.append("Tool: \(text)")
+            }
+        }
+        return parts.joined(separator: "\n\n")
     }
 
     func performStream(
@@ -162,7 +194,7 @@ private extension MLXProvider {
 
         let container = try await loadModel()
         let chatSession = ChatSession(container, instructions: request.systemPrompt)
-        let prompt = extractUserPrompt(from: request)
+        let prompt = buildConversationPrompt(from: request)
 
         var accumulated = ""
         var tokenCount = 0

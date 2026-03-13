@@ -232,4 +232,74 @@ struct SmartRouterTests {
         let decision = await router.route(request, policy: policy, providers: providers, budgetRemaining: nil)
         #expect(decision.selectedProvider == .anthropic)
     }
+
+    @Test func latencyOptimizedPrefersFastProvider() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy(strategy: .latencyOptimized)
+        let request = AIRequest.chat("Hello")
+
+        let fast = MockProvider(
+            id: .gemini,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 100_000,
+                supportsStreaming: true, supportsToolCalling: false, supportsImageInput: false,
+                costPerMillionInputTokens: 1.0, costPerMillionOutputTokens: 5.0,
+                estimatedLatency: .fast, privacyLevel: .thirdPartyCloud
+            )
+        )
+        let slow = MockProvider(
+            id: .ollama,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 100_000,
+                supportsStreaming: true, supportsToolCalling: false, supportsImageInput: false,
+                costPerMillionInputTokens: nil, costPerMillionOutputTokens: nil,
+                estimatedLatency: .slow, privacyLevel: .onDevice
+            )
+        )
+
+        let decision = await router.route(request, policy: policy, providers: [slow, fast], budgetRemaining: nil)
+        #expect(decision.selectedProvider == .gemini)
+    }
+
+    @Test func capabilityFilterBlocksProviderWithoutToolCalling() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy(strategy: .smart)
+
+        let tool = ToolDefinition(name: "calc", description: "Calculate", inputSchema: .object([:]))
+        let request = AIRequest.chat("Use the calculator").withTools([tool])
+
+        let noTools = MockProvider(
+            id: .ollama,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 100_000,
+                supportsStreaming: true, supportsToolCalling: false, supportsImageInput: false,
+                costPerMillionInputTokens: nil, costPerMillionOutputTokens: nil,
+                estimatedLatency: .fast, privacyLevel: .onDevice
+            )
+        )
+        let withTools = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 200_000,
+                supportsStreaming: true, supportsToolCalling: true, supportsImageInput: false,
+                costPerMillionInputTokens: 3.0, costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast, privacyLevel: .thirdPartyCloud
+            )
+        )
+
+        let decision = await router.route(request, policy: policy, providers: [noTools, withTools], budgetRemaining: nil)
+        #expect(decision.selectedProvider == .anthropic)
+    }
+
+    @Test func fixedRouteToNonExistentProviderFallsBack() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy(strategy: .fixed(.gemini))
+        let request = AIRequest.chat("Hello")
+        let providers: [any AIProvider] = [cloudProvider(), localProvider()]
+
+        let decision = await router.route(request, policy: policy, providers: providers, budgetRemaining: nil)
+        // Gemini is not registered — should fall back to first available
+        #expect(decision.selectedProvider != .gemini)
+        #expect(decision.isAvailable)
+    }
 }
