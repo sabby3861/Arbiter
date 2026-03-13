@@ -92,6 +92,7 @@ public struct AnthropicProvider: AIProvider, Sendable {
     }
 
     public func generate(_ request: AIRequest) async throws -> AIResponse {
+        try Task.checkCancellation()
         let urlRequest = try buildURLRequest(for: request, stream: false)
 
         let data: Data

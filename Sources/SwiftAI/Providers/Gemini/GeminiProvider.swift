@@ -187,7 +187,7 @@ private extension GeminiProvider {
         case 429: return .rateLimited(.gemini, retryAfter: nil)
         case 400: return .invalidRequest(reason: extractErrorMessage(from: body))
         case 404: return .modelNotFound(extractErrorMessage(from: body))
-        default: return .httpError(statusCode: statusCode, body: body)
+        default: return .httpError(statusCode: statusCode, body: redactKeys(body))
         }
     }
 
@@ -199,5 +199,12 @@ private extension GeminiProvider {
             return "Unknown error"
         }
         return message
+    }
+
+    func redactKeys(_ text: String) -> String {
+        let pattern = #"key=[^\s&\"']+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "key=[REDACTED]")
     }
 }

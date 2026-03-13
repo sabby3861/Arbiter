@@ -102,6 +102,15 @@ struct OpenAIMapper: Sendable {
             return nil
         }
 
+        return parseStreamDelta(delta, firstChoice: firstChoice, json: json, accumulated: &accumulated)
+    }
+
+    private func parseStreamDelta(
+        _ delta: [String: Any],
+        firstChoice: [String: Any],
+        json: [String: Any],
+        accumulated: inout String
+    ) -> AIStreamChunk? {
         if let content = delta["content"] as? String, !content.isEmpty {
             accumulated += content
             return AIStreamChunk(

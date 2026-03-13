@@ -110,6 +110,66 @@ struct SwiftAITests {
         let response = try await ai.generate("Hello")
         #expect(response.provider == .mlx)
     }
+
+    @Test func preferCloudRouting() async throws {
+        let ai = SwiftAI {
+            $0.local(MockLocalProvider())
+            $0.cloud(MockProvider(id: .openAI, responseContent: "Cloud"))
+            $0.routing(.preferCloud)
+        }
+
+        let response = try await ai.generate("Hello")
+        #expect(response.provider == .openAI)
+    }
+
+    @Test func allProvidersFailed() async throws {
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(id: .anthropic, available: false))
+            $0.cloud(MockProvider(id: .openAI, available: false))
+        }
+
+        await #expect(throws: SwiftAIError.self) {
+            try await ai.generate("Hello")
+        }
+    }
+
+    @Test func providerErrorPropagates() async throws {
+        let ai = SwiftAI(provider: MockProvider(
+            shouldError: .invalidRequest(reason: "Bad prompt")
+        ))
+
+        await #expect(throws: SwiftAIError.self) {
+            try await ai.generate("Hello")
+        }
+    }
+
+    @Test func streamErrorPropagates() async throws {
+        let ai = SwiftAI(provider: MockProvider(
+            shouldError: .authenticationFailed(.anthropic)
+        ))
+
+        var caughtError = false
+        let stream = ai.stream("Hello")
+        do {
+            for try await _ in stream {}
+        } catch is SwiftAIError {
+            caughtError = true
+        }
+        #expect(caughtError)
+    }
+
+    @Test func requestOptionsPassthrough() async throws {
+        let mock = MockProvider(responseContent: "Response")
+        let ai = SwiftAI(provider: mock)
+
+        let options = RequestOptions(
+            maxTokens: 500,
+            temperature: 0.7,
+            systemPrompt: "Be helpful"
+        )
+        let response = try await ai.generate("Hello", options: options)
+        #expect(response.content == "Response")
+    }
 }
 
 @Suite("Concurrency")
