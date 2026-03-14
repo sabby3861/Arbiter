@@ -29,7 +29,6 @@ public actor CostTracker {
         self.dailyRequestCount = (savedDay == today) ? store.integer(forKey: "daily_count") : 0
     }
 
-    /// Internal init for testing without UserDefaults side effects
     init(defaults: UserDefaults) {
         self.defaults = defaults
         self.lastResetDay = Self.dayFormatter.string(from: Date())

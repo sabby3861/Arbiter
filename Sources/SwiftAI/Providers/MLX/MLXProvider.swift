@@ -273,7 +273,6 @@ private extension MLXProvider {
         // See buildChatMessages() for why we bypass ChatSession.
         do {
             try await container.perform { context in
-                var accumulated = ""
                 let userInput = UserInput(chat: chatMessages)
                 let lmInput = try await context.processor.prepare(input: userInput)
                 let tokenStream: AsyncStream<Generation> = try MLXLMCommon.generate(
@@ -282,43 +281,17 @@ private extension MLXProvider {
                     context: context
                 )
 
-                var completionInfo: GenerateCompletionInfo?
+                let (accumulated, completionInfo) = try await consumeTokenStream(
+                    tokenStream, continuation: continuation
+                )
 
-                for await generation in tokenStream {
-                    try Task.checkCancellation()
-                    switch generation {
-                    case .chunk(let chunk):
-                        accumulated += chunk
-                        continuation.yield(AIStreamChunk(
-                            delta: chunk,
-                            accumulatedContent: accumulated,
-                            isComplete: false,
-                            provider: .mlx
-                        ))
-                    case .info(let info):
-                        completionInfo = info
-                    case .toolCall:
-                        break
-                    }
-                }
-
-                let inputTokens = completionInfo?.promptTokenCount
-                    ?? lmInput.text.tokens.size
-                let outputTokens = completionInfo?.generationTokenCount ?? 0
-                let maxTokens = parameters.maxTokens ?? Self.defaultMaxTokens
-                let hitMaxTokens = outputTokens >= maxTokens
-
-                continuation.yield(AIStreamChunk(
-                    delta: "",
-                    accumulatedContent: accumulated,
-                    isComplete: true,
-                    usage: TokenUsage(
-                        inputTokens: inputTokens,
-                        outputTokens: outputTokens
-                    ),
-                    finishReason: hitMaxTokens ? .maxTokens : .complete,
-                    provider: .mlx
-                ))
+                yieldFinalChunk(
+                    accumulated: accumulated,
+                    completionInfo: completionInfo,
+                    fallbackInputTokens: lmInput.text.tokens.size,
+                    parameters: parameters,
+                    continuation: continuation
+                )
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -326,6 +299,59 @@ private extension MLXProvider {
             logger.error("MLX stream failed: \(error.localizedDescription)")
             throw SwiftAIError.providerUnavailable(.mlx, reason: error.localizedDescription)
         }
+    }
+
+    func consumeTokenStream(
+        _ tokenStream: AsyncStream<Generation>,
+        continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
+    ) async throws -> (String, GenerateCompletionInfo?) {
+        var accumulated = ""
+        var completionInfo: GenerateCompletionInfo?
+
+        for await generation in tokenStream {
+            try Task.checkCancellation()
+            switch generation {
+            case .chunk(let chunk):
+                accumulated += chunk
+                continuation.yield(AIStreamChunk(
+                    delta: chunk,
+                    accumulatedContent: accumulated,
+                    isComplete: false,
+                    provider: .mlx
+                ))
+            case .info(let info):
+                completionInfo = info
+            case .toolCall:
+                break
+            }
+        }
+
+        return (accumulated, completionInfo)
+    }
+
+    func yieldFinalChunk(
+        accumulated: String,
+        completionInfo: GenerateCompletionInfo?,
+        fallbackInputTokens: Int,
+        parameters: GenerateParameters,
+        continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
+    ) {
+        let inputTokens = completionInfo?.promptTokenCount ?? fallbackInputTokens
+        let outputTokens = completionInfo?.generationTokenCount ?? 0
+        let maxTokens = parameters.maxTokens ?? Self.defaultMaxTokens
+        let hitMaxTokens = outputTokens >= maxTokens
+
+        continuation.yield(AIStreamChunk(
+            delta: "",
+            accumulatedContent: accumulated,
+            isComplete: true,
+            usage: TokenUsage(
+                inputTokens: inputTokens,
+                outputTokens: outputTokens
+            ),
+            finishReason: hitMaxTokens ? .maxTokens : .complete,
+            provider: .mlx
+        ))
     }
 }
 

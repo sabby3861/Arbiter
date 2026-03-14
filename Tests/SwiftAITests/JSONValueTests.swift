@@ -8,8 +8,6 @@ import Testing
 @Suite("JSONValue")
 struct JSONValueTests {
 
-    // MARK: - Codable roundtrip
-
     @Test func stringRoundtrip() throws {
         let value: JSONValue = .string("hello")
         let data = try JSONEncoder().encode(value)
@@ -63,8 +61,6 @@ struct JSONValueTests {
         #expect(decoded == value)
     }
 
-    // MARK: - Expressible literal conformances
-
     @Test func stringLiteral() {
         let value: JSONValue = "hello"
         #expect(value == .string("hello"))
@@ -94,8 +90,6 @@ struct JSONValueTests {
         let value: JSONValue = ["key": "value"]
         #expect(value == .object(["key": .string("value")]))
     }
-
-    // MARK: - Edge cases
 
     @Test func emptyArray() throws {
         let value: JSONValue = .array([])

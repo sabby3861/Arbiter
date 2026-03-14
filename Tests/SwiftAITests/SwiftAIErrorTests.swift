@@ -8,8 +8,6 @@ import Testing
 @Suite("SwiftAIError")
 struct SwiftAIErrorTests {
 
-    // MARK: - errorDescription coverage for all cases
-
     @Test func providerUnavailableHasDescription() {
         let error = SwiftAIError.providerUnavailable(.anthropic, reason: "Server down")
         #expect(error.errorDescription?.contains("Anthropic") == true)
@@ -96,8 +94,6 @@ struct SwiftAIErrorTests {
         #expect(error.errorDescription?.contains("100") == true)
     }
 
-    // MARK: - recoverySuggestion coverage
-
     @Test func allCasesHaveRecoverySuggestion() {
         let errors: [SwiftAIError] = [
             .providerUnavailable(.anthropic, reason: "test"),
@@ -119,8 +115,9 @@ struct SwiftAIErrorTests {
         ]
 
         for error in errors {
-            #expect(error.recoverySuggestion != nil, "Missing recoverySuggestion for: \(error)")
-            #expect(!error.recoverySuggestion!.isEmpty, "Empty recoverySuggestion for: \(error)")
+            let suggestion = error.recoverySuggestion
+            #expect(suggestion != nil, "Missing recoverySuggestion for: \(error)")
+            #expect(suggestion?.isEmpty == false, "Empty recoverySuggestion for: \(error)")
         }
     }
 }

@@ -283,6 +283,20 @@ private extension SwiftAI {
             throw SwiftAIError.allProvidersFailed(attempts: [])
         }
 
+        let lastError = await attemptStreamProviders(
+            request: request, decision: decision, continuation: continuation
+        )
+
+        if let lastError {
+            throw lastError
+        }
+    }
+
+    func attemptStreamProviders(
+        request: AIRequest,
+        decision: RoutingDecision,
+        continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
+    ) async -> (any Error)? {
         let providerOrder = buildProviderOrder(from: decision)
         let maxAttempts = routingPolicy.fallbackEnabled ? routingPolicy.maxRetries + 1 : 1
         var lastError: (any Error)?
@@ -293,20 +307,19 @@ private extension SwiftAI {
                 try await executeStream(
                     request: request, provider: provider, continuation: continuation
                 )
-                return
+                return nil
             } catch is CancellationError {
-                throw CancellationError()
+                return CancellationError()
             } catch let streamError as StreamingFallbackUnsafe {
-                // Provider failed after already sending chunks — fallback would
-                // corrupt the output, so propagate the original error immediately.
-                throw streamError.underlying
+                return streamError.underlying
             } catch {
                 lastError = error
                 logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
+                continue
             }
         }
 
-        throw lastError ?? SwiftAIError.allProvidersFailed(attempts: [])
+        return lastError ?? SwiftAIError.allProvidersFailed(attempts: [])
     }
 
     func executeStream(

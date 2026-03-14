@@ -55,8 +55,6 @@ struct PrivacyGuardTests {
         #expect(guard_.shouldForceLocal(for: request))
     }
 
-    // MARK: - PII detection
-
     @Test func detectsEmailAddress() {
         let guard_ = PrivacyGuard(detectPII: true)
         let request = AIRequest.chat("Contact me at user@example.com")
@@ -98,8 +96,6 @@ struct PrivacyGuardTests {
         let request = AIRequest.chat("Email: user@example.com")
         #expect(guard_.shouldForceLocal(for: request))
     }
-
-    // MARK: - System prompt PII
 
     @Test func detectsPIIInSystemPrompt() {
         let guard_ = PrivacyGuard(detectPII: true)

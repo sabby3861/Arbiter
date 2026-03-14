@@ -185,41 +185,43 @@ public struct SwiftAIChatView: View {
             isStreaming = true
             streamingText = ""
             streamingProvider = nil
-
-            do {
-                var conversationMessages = messages.map { chatMsg -> Message in
-                    chatMsg.role == .user ? .user(chatMsg.text) : .assistant(chatMsg.text)
-                }
-                if let systemPrompt {
-                    conversationMessages.insert(.system(systemPrompt), at: 0)
-                }
-
-                let stream = ai.chatStream(conversationMessages)
-                for try await chunk in stream {
-                    try Task.checkCancellation()
-                    streamingText = chunk.accumulatedContent
-                    streamingProvider = chunk.provider
-                }
-
-                if !streamingText.isEmpty {
-                    messages.append(ChatMessage(
-                        role: .assistant,
-                        text: streamingText,
-                        provider: streamingProvider
-                    ))
-                }
-            } catch is CancellationError {
-                // User cancelled
-            } catch {
-                lastError = error
-                lastFailedMessage = text
-                if messages.last?.role == .user {
-                    messages.removeLast()
-                }
-            }
-
+            await performStreaming(for: text)
             isStreaming = false
             streamingText = ""
+        }
+    }
+
+    private func performStreaming(for text: String) async {
+        do {
+            var conversationMessages = messages.map { chatMsg -> Message in
+                chatMsg.role == .user ? .user(chatMsg.text) : .assistant(chatMsg.text)
+            }
+            if let systemPrompt {
+                conversationMessages.insert(.system(systemPrompt), at: 0)
+            }
+
+            let stream = ai.chatStream(conversationMessages)
+            for try await chunk in stream {
+                try Task.checkCancellation()
+                streamingText = chunk.accumulatedContent
+                streamingProvider = chunk.provider
+            }
+
+            if !streamingText.isEmpty {
+                messages.append(ChatMessage(
+                    role: .assistant,
+                    text: streamingText,
+                    provider: streamingProvider
+                ))
+            }
+        } catch is CancellationError {
+            // User cancelled
+        } catch {
+            lastError = error
+            lastFailedMessage = text
+            if messages.last?.role == .user {
+                messages.removeLast()
+            }
         }
     }
 

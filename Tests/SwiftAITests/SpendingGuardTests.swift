@@ -7,8 +7,6 @@ import Testing
 
 @Suite("SpendingGuard Advanced")
 struct SpendingGuardAdvancedTests {
-    // MARK: - Per-request limit
-
     @Test func perRequestLimitBlocks() async throws {
         let guard_ = SpendingGuard(budgetLimit: 10.0, perRequestLimit: 0.05)
 
@@ -22,8 +20,6 @@ struct SpendingGuardAdvancedTests {
         let reservation = try await guard_.reserveBudget(estimatedCost: 0.10)
         #expect(reservation?.estimatedCost == 0.10)
     }
-
-    // MARK: - Daily request limit
 
     @Test func dailyRequestLimitThrowsDailyLimitExceeded() async throws {
         let guard_ = SpendingGuard(budgetLimit: 100.0, dailyRequestLimit: 3)
@@ -57,8 +53,6 @@ struct SpendingGuardAdvancedTests {
         }
     }
 
-    // MARK: - Max tokens per request
-
     @Test func effectiveMaxTokensReturnsConfigured() {
         let guard_ = SpendingGuard(budgetLimit: 10.0, maxTokensPerRequest: 2048)
         #expect(guard_.effectiveMaxTokens == 2048)
@@ -68,8 +62,6 @@ struct SpendingGuardAdvancedTests {
         let guard_ = SpendingGuard(budgetLimit: 10.0)
         #expect(guard_.effectiveMaxTokens == nil)
     }
-
-    // MARK: - LimitAction
 
     @Test func blockActionDoesNotFallback() {
         let guard_ = SpendingGuard(budgetLimit: 10.0, limitAction: .block)
@@ -92,8 +84,6 @@ struct SpendingGuardAdvancedTests {
         let reservation = try await guard_.reserveBudget(estimatedCost: 0.01)
         #expect(reservation == nil)
     }
-
-    // MARK: - Combined limits
 
     @Test func perRequestLimitCheckedBeforeBudget() async throws {
         let guard_ = SpendingGuard(
