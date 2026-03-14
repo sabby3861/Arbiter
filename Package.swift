@@ -17,6 +17,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift-examples.git", from: "2.21.0"),
+        .package(url: "https://github.com/apple/swift-docc-plugin.git", from: "1.4.3"),
     ],
     targets: [
         .target(

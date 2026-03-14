@@ -22,9 +22,12 @@ The safest approach is to never send your real API key to the device at all. Ins
 ### SwiftAI Configuration with Proxy
 
 ```swift
+// Store your proxy token in the Keychain
+try SecureKeyStorage.store(key: "your-proxy-token", for: .anthropic)
+
 let ai = try SwiftAI {
-    try $0.cloud(.anthropic(
-        from: .hardcoded("your-proxy-token"),  // NOT the real Anthropic key
+    $0.cloud(try AnthropicProvider(
+        keyStorage: .anthropic,
         baseURL: URL(string: "https://your-server.com/api/anthropic")
     ))
 }
@@ -62,9 +65,12 @@ func routes(_ app: Application) throws {
 [AIProxy](https://www.aiproxy.pro) is a managed proxy service that handles key protection, rate limiting, and analytics. SwiftAI works with AIProxy out of the box:
 
 ```swift
+// Store your AIProxy token in the Keychain
+try SecureKeyStorage.store(key: "aiproxy-token", for: .openAI)
+
 let ai = try SwiftAI {
-    try $0.cloud(.openAI(
-        from: .hardcoded("aiproxy-token"),
+    $0.cloud(try OpenAIProvider(
+        keyStorage: .openAI,
         baseURL: URL(string: "https://api.aiproxy.pro/v1")
     ))
 }

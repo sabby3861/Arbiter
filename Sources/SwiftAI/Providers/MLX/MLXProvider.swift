@@ -41,6 +41,12 @@ private actor ModelContainerCache {
     private var cache: [String: ModelContainer] = [:]
     private var inFlightLoads: [String: Task<ModelContainer, Error>] = [:]
 
+    func clearAll() {
+        cache.removeAll()
+        for (_, task) in inFlightLoads { task.cancel() }
+        inFlightLoads.removeAll()
+    }
+
     func load(
         for modelId: String,
         using loader: @escaping @Sendable () async throws -> ModelContainer
@@ -73,13 +79,22 @@ private actor ModelContainerCache {
 ///     $0.local(MLXProvider(.auto))
 /// }
 /// ```
-public struct MLXProvider: AIProvider, Sendable {
+public struct MLXProvider: AIProvider, UnloadableProvider, Sendable {
     public let id: ProviderID = .mlx
 
     private let configuration: MLXProviderConfiguration
     private let modelRegistry: MLXModelRegistry
     private let resolvedModelId: String
     private let containerCache = ModelContainerCache()
+
+    /// Unload all cached models from memory.
+    ///
+    /// Called automatically by ``LifecycleManager`` on memory warnings.
+    /// The next `generate` or `stream` call will re-download and reload the model.
+    public func unloadModel() {
+        Task { await containerCache.clearAll() }
+        logger.info("MLX model cache cleared — model will reload on next request")
+    }
 
     public var capabilities: ProviderCapabilities {
         let modelInfo = modelRegistry.modelInfo(for: resolvedModelId)
@@ -361,8 +376,10 @@ private extension MLXProvider {
 ///
 /// Reports as unavailable so the router skips it gracefully.
 /// Add mlx-swift as a dependency to enable on-device inference.
-public struct MLXProvider: AIProvider, Sendable {
+public struct MLXProvider: AIProvider, UnloadableProvider, Sendable {
     public let id: ProviderID = .mlx
+
+    public func unloadModel() {}
 
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(

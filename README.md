@@ -1,5 +1,7 @@
 # SwiftAI
 
+[![CI](https://github.com/anthropics/SwiftAI/actions/workflows/ci.yml/badge.svg)](https://github.com/anthropics/SwiftAI/actions/workflows/ci.yml)
+
 **One API for every AI — cloud, on-device, and Apple Intelligence.**
 
 SwiftAI is a unified AI runtime for Swift that lets you call any AI provider through a single, consistent interface. Write your AI code once, then swap providers — or run them all simultaneously with intelligent routing.
@@ -9,11 +11,15 @@ SwiftAI is a unified AI runtime for Swift that lets you call any AI provider thr
 ```swift
 import SwiftAI
 
-// Keychain-stored key (recommended)
 let ai = try SwiftAI {
     try $0.cloud(.anthropic(from: .keychain))
 }
-let response = try await ai.generate("Explain Swift concurrency in one sentence.")
+
+// Simple generation
+let response = try await ai.generate("Explain quantum computing")
+
+// Or drop in a full chat UI
+SwiftAIChatView(ai: ai)
 ```
 
 ## Multi-Provider Setup
@@ -291,7 +297,7 @@ ContentView()
     .swiftAILifecycle(ai)
 ```
 
-Automatically pauses on-device providers when the app backgrounds, responds to memory warnings by unloading models, and resumes on foreground.
+Automatically unloads on-device models when the system reports memory pressure, freeing RAM for your app.
 
 ## Middleware
 
@@ -313,9 +319,9 @@ Protects against prompt injection and abuse:
 - Rate limiting per minute
 - Rejects empty or whitespace-only prompts
 
-> **Note:** `PausableProvider` and `UnloadableProvider` are extension points —
-> implement them on your custom providers to enable automatic lifecycle management.
-> Built-in provider conformance is coming in a future release.
+> **Note:** `MLXProvider` conforms to `UnloadableProvider` — on memory warnings,
+> `LifecycleManager` automatically unloads cached models to free RAM.
+> Implement `UnloadableProvider` on your own providers for the same behaviour.
 
 ### Logging Middleware
 
@@ -367,10 +373,11 @@ MLX support is included as an optional dependency — it compiles only on macOS 
 
 ## Requirements
 
-- Swift 6.1+
+- Swift 6.0+
 - iOS 17+ / macOS 14+ / visionOS 1+
+- Xcode 16+
 - MLX provider: Apple Silicon (M1+) with 4GB+ RAM
-- Apple FM provider: iOS 26+ / macOS 26+ with Apple Intelligence enabled
+- Apple Foundation Models: iOS 26+ / macOS 26+ with Apple Intelligence enabled
 
 ## Security
 
@@ -403,6 +410,27 @@ For production apps, we strongly recommend:
 
 See our [Security Guide](Documentation/SecurityGuide.md) for detailed best practices.
 
+## Examples
+
+Ready-to-run example projects in the [`Examples/`](Examples/) directory:
+
+| Project | Description |
+|---------|-------------|
+| [BasicChat](Examples/BasicChat/) | Zero to working AI chat in under 15 lines of code |
+| [MultiProvider](Examples/MultiProvider/) | Smart routing across Anthropic + OpenAI + Ollama with cost controls |
+| [OnDeviceOnly](Examples/OnDeviceOnly/) | 100% on-device inference with MLX — no network required |
+| [SmartRouting](Examples/SmartRouting/) | Live routing controls with debug view and usage dashboard |
+
+Each example has its own `Package.swift` — clone, add your API key, and run.
+
+## API Documentation
+
+API docs are available via DocC:
+
+```bash
+swift package generate-documentation
+```
+
 ## Roadmap
 
 - [x] Core protocol layer
@@ -427,7 +455,15 @@ See our [Security Guide](Documentation/SecurityGuide.md) for detailed best pract
 - [x] Usage analytics with cross-session persistence
 - [x] Lifecycle management for on-device providers
 - [x] Security documentation and proxy architecture guide
+- [ ] v0.2 — MCP client support
+- [ ] v0.2 — Certificate pinning for cloud providers
+- [ ] v0.3 — Conversation persistence
+- [ ] v0.3 — Function calling abstraction
 
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+Built by [Sanjay Kumar](https://github.com/anthropics) — Lead iOS Engineer, London | [Blog](https://medium.com/@anthropics)

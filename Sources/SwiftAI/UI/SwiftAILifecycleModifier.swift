@@ -4,10 +4,10 @@
 import SwiftUI
 
 extension View {
-    /// Manage SwiftAI lifecycle (background/foreground)
+    /// Manage SwiftAI lifecycle for on-device providers.
     ///
-    /// Attach this modifier to your root view to automatically pause on-device
-    /// providers when the app backgrounds and resume them on foreground.
+    /// Attach this modifier to your root view to automatically unload
+    /// on-device models when the system reports memory pressure.
     ///
     /// ```swift
     /// ContentView()
