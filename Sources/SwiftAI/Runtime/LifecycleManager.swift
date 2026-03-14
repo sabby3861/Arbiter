@@ -14,6 +14,9 @@ private let logger = Logger(subsystem: "com.swiftai", category: "LifecycleManage
 public final class LifecycleManager {
     private let providers: [any AIProvider]
     private var isMonitoring = false
+    #if os(macOS)
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    #endif
 
     public init(providers: [any AIProvider]) {
         self.providers = providers
@@ -26,6 +29,8 @@ public final class LifecycleManager {
 
         #if canImport(UIKit) && !os(macOS)
         setupUIKitObservers()
+        #elseif os(macOS)
+        setupMacOSObservers()
         #endif
     }
 
@@ -34,11 +39,18 @@ public final class LifecycleManager {
         guard isMonitoring else { return }
         isMonitoring = false
         NotificationCenter.default.removeObserver(self)
+        #if os(macOS)
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
+        #endif
         logger.debug("Lifecycle monitoring stopped")
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        #if os(macOS)
+        memoryPressureSource?.cancel()
+        #endif
     }
 }
 
@@ -57,6 +69,28 @@ private extension LifecycleManager {
     }
 
     @objc func onMemoryWarning() { handleMemoryWarning() }
+}
+#endif
+
+#if os(macOS)
+import AppKit
+
+private extension LifecycleManager {
+    /// macOS lacks a direct equivalent to UIKit's didReceiveMemoryWarningNotification.
+    /// We use DispatchSource memory pressure events to detect when the system is under
+    /// memory pressure and proactively unload models.
+    func setupMacOSObservers() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            self?.handleMemoryWarning()
+        }
+        source.resume()
+        memoryPressureSource = source
+        logger.info("Lifecycle monitoring started — watching for macOS memory pressure events")
+    }
 }
 #endif
 

@@ -7,7 +7,7 @@ Go from an empty Xcode project to a working AI chat in under 10 minutes.
 In Xcode: **File > Add Package Dependencies**, then paste:
 
 ```
-https://github.com/anthropics/SwiftAI.git
+https://github.com/sabby3861/SwiftAI.git
 ```
 
 Set the version to **0.1.0** (or "Up to Next Major").

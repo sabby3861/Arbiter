@@ -8,3 +8,4 @@ DerivedData/
 *.xcodeproj
 *.xcworkspace
 .claude/
+Package.resolved

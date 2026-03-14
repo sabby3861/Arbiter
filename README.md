@@ -1,6 +1,6 @@
 # SwiftAI
 
-[![CI](https://github.com/anthropics/SwiftAI/actions/workflows/ci.yml/badge.svg)](https://github.com/anthropics/SwiftAI/actions/workflows/ci.yml)
+[![CI](https://github.com/sabby3861/SwiftAI/actions/workflows/ci.yml/badge.svg)](https://github.com/sabby3861/SwiftAI/actions/workflows/ci.yml)
 
 **One API for every AI — cloud, on-device, and Apple Intelligence.**
 
@@ -365,7 +365,7 @@ Add SwiftAI to your project via Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/anthropics/SwiftAI.git", from: "0.1.0")
+    .package(url: "https://github.com/sabby3861/SwiftAI.git", from: "0.1.0")
 ]
 ```
 
@@ -466,4 +466,4 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
-Built by [Sanjay Kumar](https://github.com/anthropics) — Lead iOS Engineer, London | [Blog](https://medium.com/@anthropics)
+Built by [Sanjay Kumar](https://github.com/sabby3861) — Lead iOS Engineer, London | [Blog](https://medium.com/@sabby3861)

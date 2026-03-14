@@ -22,14 +22,11 @@ struct SmartRoutingRootView: View {
     @State private var privacyMode = false
     @State private var selectedTab = 0
     @State private var analytics = UsageAnalytics()
-
-    private var ai: SwiftAI {
-        buildRuntime(
-            offline: offlineMode,
-            lowBudget: budgetExceeded,
-            privacy: privacyMode
-        )
-    }
+    @State private var ai: SwiftAI = buildRuntime(
+        offline: false,
+        lowBudget: false,
+        privacy: false
+    )
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -37,6 +34,9 @@ struct SmartRoutingRootView: View {
             debugTab
             usageTab
         }
+        .onChange(of: offlineMode) { _, _ in rebuildRuntime() }
+        .onChange(of: budgetExceeded) { _, _ in rebuildRuntime() }
+        .onChange(of: privacyMode) { _, _ in rebuildRuntime() }
     }
 
     private var chatTab: some View {
@@ -110,6 +110,14 @@ struct SmartRoutingRootView: View {
         .toggleStyle(.button)
         .buttonStyle(.bordered)
         .tint(isOn.wrappedValue ? .orange : .secondary)
+    }
+
+    private func rebuildRuntime() {
+        ai = buildRuntime(
+            offline: offlineMode,
+            lowBudget: budgetExceeded,
+            privacy: privacyMode
+        )
     }
 }
 
