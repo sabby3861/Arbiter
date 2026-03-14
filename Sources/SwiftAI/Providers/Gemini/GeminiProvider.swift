@@ -152,7 +152,8 @@ private extension GeminiProvider {
 
     func buildURLRequest(modelName: String, stream: Bool, body: Data) throws -> URLRequest {
         let action = stream ? "streamGenerateContent" : "generateContent"
-        let path = "/v1/models/\(modelName):\(action)"
+        let safeName = modelName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelName
+        let path = "/v1/models/\(safeName):\(action)"
 
         var components = URLComponents()
         components.scheme = baseURL.scheme
@@ -198,7 +199,7 @@ private extension GeminiProvider {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let error = json["error"] as? [String: Any],
               let message = error["message"] as? String else {
-            return "Unknown error"
+            return body.isEmpty ? "Unknown error" : String(body.prefix(500))
         }
         return message
     }

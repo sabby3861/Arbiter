@@ -59,7 +59,7 @@ public actor SpendingGuard {
         if let dailyLimit = dailyRequestLimit, dailyRequestCount >= dailyLimit {
             logger.warning("Daily request limit reached: \(self.dailyRequestCount, privacy: .public)")
             if limitAction == .fallbackToCheaper { return nil }
-            throw SwiftAIError.budgetExceeded(spent: totalSpent, limit: budgetLimit)
+            throw SwiftAIError.dailyLimitExceeded(count: dailyRequestCount, limit: dailyLimit)
         }
 
         let projectedSpend = totalSpent + estimatedCost

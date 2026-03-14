@@ -71,7 +71,8 @@ public actor CostTracker {
 
     /// Number of requests made today
     public var todayRequestCount: Int {
-        dailyRequestCount
+        resetDayIfNeeded()
+        return dailyRequestCount
     }
 
     /// Reset all tracked spending

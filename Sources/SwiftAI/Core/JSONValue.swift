@@ -75,6 +75,7 @@ extension JSONValue: ExpressibleByArrayLiteral {
 
 extension JSONValue: ExpressibleByDictionaryLiteral {
     public init(dictionaryLiteral elements: (String, JSONValue)...) {
-        self = .object(Dictionary(uniqueKeysWithValues: elements))
+        // Use last-wins for duplicate keys instead of crashing
+        self = .object(Dictionary(elements, uniquingKeysWith: { _, last in last }))
     }
 }

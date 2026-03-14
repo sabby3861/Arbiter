@@ -29,9 +29,11 @@ struct OpenAIMapper: Sendable {
         }
         if stream {
             body["stream"] = true
+            // Required to receive token usage data in the final streaming chunk
+            body["stream_options"] = ["include_usage": true]
         }
 
-        body["messages"] = request.messages.map { mapMessageToJSON($0, systemPrompt: request.systemPrompt) }
+        body["messages"] = request.messages.map { mapMessageToJSON($0) }
             .flatMap { $0 }
 
         if let systemPrompt = request.systemPrompt {
@@ -137,7 +139,7 @@ struct OpenAIMapper: Sendable {
 }
 
 private extension OpenAIMapper {
-    func mapMessageToJSON(_ message: Message, systemPrompt: String?) -> [[String: Any]] {
+    func mapMessageToJSON(_ message: Message) -> [[String: Any]] {
         // System messages handled separately via systemPrompt injection
         guard message.role != .system else { return [] }
 

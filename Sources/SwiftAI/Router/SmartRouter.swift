@@ -156,10 +156,13 @@ private extension SmartRouter {
             logger.debug("Offline — removed cloud providers")
         }
 
+        if policy.forceLocal && policy.forceCloud {
+            logger.warning("Conflicting policy: both forceLocal and forceCloud are true — forceLocal takes precedence")
+        }
+
         if policy.forceLocal {
             candidates = candidates.filter { $0.id.tier != .cloud }
-        }
-        if policy.forceCloud {
+        } else if policy.forceCloud {
             candidates = candidates.filter { $0.id.tier == .cloud }
         }
 

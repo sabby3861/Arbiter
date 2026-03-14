@@ -29,19 +29,39 @@ public struct MLXProviderConfiguration: Sendable {
 
 #if canImport(MLX) && canImport(MLXLLM)
 import MLX
-import MLXLMCommon
+@preconcurrency import MLXLMCommon
 import MLXLLM
 
 /// Thread-safe cache for loaded MLX model containers.
+///
+/// Uses task deduplication to prevent redundant concurrent loads — if two
+/// callers request the same model simultaneously, only one download/load
+/// occurs and both await the same result.
 private actor ModelContainerCache {
     private var cache: [String: ModelContainer] = [:]
+    private var inFlightLoads: [String: Task<ModelContainer, Error>] = [:]
 
-    func get(for modelId: String) -> ModelContainer? {
-        cache[modelId]
-    }
-
-    func set(_ container: ModelContainer, for modelId: String) {
-        cache[modelId] = container
+    func load(
+        for modelId: String,
+        using loader: @escaping @Sendable () async throws -> ModelContainer
+    ) async throws -> ModelContainer {
+        if let container = cache[modelId] {
+            return container
+        }
+        if let existingTask = inFlightLoads[modelId] {
+            return try await existingTask.value
+        }
+        let task = Task { try await loader() }
+        inFlightLoads[modelId] = task
+        do {
+            let container = try await task.value
+            cache[modelId] = container
+            inFlightLoads.removeValue(forKey: modelId)
+            return container
+        } catch {
+            inFlightLoads.removeValue(forKey: modelId)
+            throw error
+        }
     }
 }
 
@@ -112,18 +132,42 @@ public struct MLXProvider: AIProvider, Sendable {
         }
 
         let container = try await loadModel()
-        let chatSession = ChatSession(container, instructions: request.systemPrompt)
-        let prompt = buildConversationPrompt(from: request)
+        let chatMessages = try buildChatMessages(from: request)
+        let parameters = buildGenerateParameters(from: request)
 
         do {
-            let content = try await chatSession.respond(to: prompt)
+            // Use ModelContainer directly with structured Chat.Message arrays.
+            // This feeds role-annotated messages into the tokenizer's chat template
+            // (via processor.prepare → tokenizer.applyChatTemplate), preserving
+            // multi-turn context without the double-formatting that ChatSession
+            // would introduce (it wraps the entire input as a single user message).
+            let result: GenerateResult = try await container.perform { context in
+                let userInput = UserInput(chat: chatMessages)
+                let lmInput = try await context.processor.prepare(input: userInput)
+                return try MLXLMCommon.generate(
+                    input: lmInput,
+                    parameters: parameters,
+                    context: context
+                ) { tokens in
+                    if let max = parameters.maxTokens, tokens.count >= max {
+                        return .stop
+                    }
+                    return .more
+                }
+            }
+
+            let hitMaxTokens = parameters.maxTokens.map { result.generationTokenCount >= $0 } ?? false
 
             return AIResponse(
                 id: "mlx-\(UUID().uuidString)",
-                content: content,
+                content: result.output,
                 model: resolvedModelId,
                 provider: .mlx,
-                finishReason: .complete
+                usage: TokenUsage(
+                    inputTokens: result.promptTokenCount,
+                    outputTokens: result.generationTokenCount
+                ),
+                finishReason: hitMaxTokens ? .maxTokens : .complete
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -150,35 +194,64 @@ public struct MLXProvider: AIProvider, Sendable {
 
 private extension MLXProvider {
     func loadModel() async throws -> ModelContainer {
-        if let cached = await containerCache.get(for: resolvedModelId) {
-            return cached
-        }
+        let modelId = resolvedModelId
         do {
-            let container = try await loadModelContainer(id: resolvedModelId)
-            await containerCache.set(container, for: resolvedModelId)
-            return container
+            return try await containerCache.load(for: modelId) {
+                try await loadModelContainer(id: modelId)
+            }
         } catch {
-            logger.error("Failed to load MLX model '\(self.resolvedModelId)': \(error.localizedDescription)")
-            throw SwiftAIError.modelNotFound(resolvedModelId)
+            logger.error("Failed to load MLX model '\(modelId)': \(error.localizedDescription)")
+            throw SwiftAIError.modelNotFound(modelId)
         }
     }
 
-    func buildConversationPrompt(from request: AIRequest) -> String {
-        var parts: [String] = []
+    /// Convert SwiftAI messages to MLXLMCommon's model-agnostic `Chat.Message` format.
+    ///
+    /// These structured messages are passed to `UserInput(chat:)` which feeds them
+    /// through the model's `MessageGenerator` and `tokenizer.applyChatTemplate()`.
+    /// This ensures each role is correctly annotated with the model-specific chat
+    /// template tokens (e.g. `<|user|>`, `<|assistant|>`) — without the
+    /// double-formatting that occurs when a pre-formatted string is wrapped as a
+    /// single user message by `ChatSession.respond(to:)`.
+    func buildChatMessages(from request: AIRequest) throws -> [Chat.Message] {
+        var chatMessages = [Chat.Message]()
+
+        if let systemPrompt = request.systemPrompt {
+            chatMessages.append(.system(systemPrompt))
+        }
+
         for message in request.messages {
             guard let text = message.content.text else { continue }
             switch message.role {
             case .user:
-                parts.append("User: \(text)")
+                chatMessages.append(.user(text))
             case .assistant:
-                parts.append("Assistant: \(text)")
+                chatMessages.append(.assistant(text))
             case .system:
-                parts.append("System: \(text)")
+                chatMessages.append(.system(text))
             case .tool:
-                parts.append("Tool: \(text)")
+                chatMessages.append(.tool(text))
             }
         }
-        return parts.joined(separator: "\n\n")
+
+        guard !chatMessages.isEmpty else {
+            throw SwiftAIError.providerUnavailable(.mlx, reason: "Request contains no text messages to process")
+        }
+
+        return chatMessages
+    }
+
+    /// Default token ceiling when the caller does not specify `maxTokens`.
+    /// Prevents unbounded generation if the model fails to emit an EOS token.
+    static let defaultMaxTokens = 4_096
+
+    /// Map SwiftAI request parameters to MLX generation parameters.
+    func buildGenerateParameters(from request: AIRequest) -> GenerateParameters {
+        GenerateParameters(
+            maxTokens: request.maxTokens ?? Self.defaultMaxTokens,
+            temperature: request.temperature.map { Float($0) } ?? 0.6,
+            topP: request.topP.map { Float($0) } ?? 1.0
+        )
     }
 
     func performStream(
@@ -193,24 +266,57 @@ private extension MLXProvider {
         }
 
         let container = try await loadModel()
-        let chatSession = ChatSession(container, instructions: request.systemPrompt)
-        let prompt = buildConversationPrompt(from: request)
+        let chatMessages = try buildChatMessages(from: request)
+        let parameters = buildGenerateParameters(from: request)
 
-        var accumulated = ""
-        var tokenCount = 0
-
-        let tokenStream = chatSession.streamResponse(to: prompt)
-
+        // Stream tokens using ModelContainer directly with structured messages.
+        // See buildChatMessages() for why we bypass ChatSession.
         do {
-            for try await token in tokenStream {
-                try Task.checkCancellation()
-                accumulated += token
-                tokenCount += 1
+            try await container.perform { context in
+                var accumulated = ""
+                let userInput = UserInput(chat: chatMessages)
+                let lmInput = try await context.processor.prepare(input: userInput)
+                let tokenStream: AsyncStream<Generation> = try MLXLMCommon.generate(
+                    input: lmInput,
+                    parameters: parameters,
+                    context: context
+                )
+
+                var completionInfo: GenerateCompletionInfo?
+
+                for await generation in tokenStream {
+                    try Task.checkCancellation()
+                    switch generation {
+                    case .chunk(let chunk):
+                        accumulated += chunk
+                        continuation.yield(AIStreamChunk(
+                            delta: chunk,
+                            accumulatedContent: accumulated,
+                            isComplete: false,
+                            provider: .mlx
+                        ))
+                    case .info(let info):
+                        completionInfo = info
+                    case .toolCall:
+                        break
+                    }
+                }
+
+                let inputTokens = completionInfo?.promptTokenCount
+                    ?? lmInput.text.tokens.size
+                let outputTokens = completionInfo?.generationTokenCount ?? 0
+                let maxTokens = parameters.maxTokens ?? Self.defaultMaxTokens
+                let hitMaxTokens = outputTokens >= maxTokens
 
                 continuation.yield(AIStreamChunk(
-                    delta: token,
+                    delta: "",
                     accumulatedContent: accumulated,
-                    isComplete: false,
+                    isComplete: true,
+                    usage: TokenUsage(
+                        inputTokens: inputTokens,
+                        outputTokens: outputTokens
+                    ),
+                    finishReason: hitMaxTokens ? .maxTokens : .complete,
                     provider: .mlx
                 ))
             }
@@ -220,15 +326,6 @@ private extension MLXProvider {
             logger.error("MLX stream failed: \(error.localizedDescription)")
             throw SwiftAIError.providerUnavailable(.mlx, reason: error.localizedDescription)
         }
-
-        continuation.yield(AIStreamChunk(
-            delta: "",
-            accumulatedContent: accumulated,
-            isComplete: true,
-            usage: TokenUsage(inputTokens: 0, outputTokens: tokenCount),
-            finishReason: .complete,
-            provider: .mlx
-        ))
     }
 }
 

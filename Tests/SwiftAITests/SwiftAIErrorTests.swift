@@ -90,6 +90,12 @@ struct SwiftAIErrorTests {
         #expect(error.errorDescription?.contains("Keychain") == true)
     }
 
+    @Test func dailyLimitExceededHasDescription() {
+        let error = SwiftAIError.dailyLimitExceeded(count: 100, limit: 100)
+        #expect(error.errorDescription?.contains("Daily") == true)
+        #expect(error.errorDescription?.contains("100") == true)
+    }
+
     // MARK: - recoverySuggestion coverage
 
     @Test func allCasesHaveRecoverySuggestion() {
@@ -105,6 +111,7 @@ struct SwiftAIErrorTests {
             .contentFiltered(reason: "test"),
             .allProvidersFailed(attempts: []),
             .budgetExceeded(spent: 1, limit: 0.5),
+            .dailyLimitExceeded(count: 100, limit: 100),
             .deviceNotCapable(reason: "test"),
             .decodingFailed(context: "test"),
             .httpError(statusCode: 500, body: ""),

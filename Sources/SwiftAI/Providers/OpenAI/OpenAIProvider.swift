@@ -107,7 +107,31 @@ public struct OpenAIProvider: AIProvider, Sendable {
     }
 
     public func stream(_ request: AIRequest) -> AsyncThrowingStream<AIStreamChunk, Error> {
-        AsyncThrowingStream { continuation in
+        // Some models (o1, o1-mini, o3-mini) don't support streaming.
+        // Fall back to generate() wrapped as a single-chunk stream.
+        guard defaultModel.supportsStreaming else {
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        let response = try await self.generate(request)
+                        continuation.yield(AIStreamChunk(
+                            delta: response.content,
+                            accumulatedContent: response.content,
+                            isComplete: true,
+                            usage: response.usage,
+                            finishReason: response.finishReason,
+                            provider: .openAI
+                        ))
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { @Sendable _ in task.cancel() }
+            }
+        }
+
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await performStream(for: request, continuation: continuation)
@@ -201,7 +225,7 @@ private extension OpenAIProvider {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let error = json["error"] as? [String: Any],
               let message = error["message"] as? String else {
-            return "Unknown error"
+            return body.isEmpty ? "Unknown error" : String(body.prefix(500))
         }
         return message
     }

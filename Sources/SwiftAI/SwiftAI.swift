@@ -126,7 +126,7 @@ private extension SwiftAI {
     }
 
     func executeGenerate(request: AIRequest, provider: any AIProvider) async throws -> AIResponse {
-        let reservation = try await reserveBudget(for: provider)
+        let reservation = try await reserveBudget(for: provider, request: request)
         do {
             let response = try await withTaskCancellationHandler {
                 try await provider.generate(request)
@@ -190,9 +190,11 @@ private extension SwiftAI {
         return request
     }
 
-    func reserveBudget(for provider: any AIProvider) async throws -> SpendingGuard.Reservation? {
+    func reserveBudget(for provider: any AIProvider, request: AIRequest) async throws -> SpendingGuard.Reservation? {
         guard let spendingGuard, provider.id.tier == .cloud else { return nil }
-        let estimatedCost = (provider.capabilities.costPerMillionInputTokens ?? 0) / 1_000_000 * 1000
+        let estimatedCost = await costTracker.estimateRequestCost(
+            request: request, capabilities: provider.capabilities
+        )
         return try await spendingGuard.reserveBudget(estimatedCost: estimatedCost)
     }
 
@@ -266,6 +268,10 @@ private extension SwiftAI {
                 return
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let streamError as StreamingFallbackUnsafe {
+                // Provider failed after already sending chunks — fallback would
+                // corrupt the output, so propagate the original error immediately.
+                throw streamError.underlying
             } catch {
                 lastError = error
                 logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
@@ -280,19 +286,27 @@ private extension SwiftAI {
         provider: any AIProvider,
         continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
     ) async throws {
-        let reservation = try await reserveBudget(for: provider)
+        let reservation = try await reserveBudget(for: provider, request: request)
         let stream = provider.stream(request)
         var lastUsage: TokenUsage?
+        var hasYieldedChunks = false
 
         do {
             for try await chunk in stream {
                 try Task.checkCancellation()
                 if let usage = chunk.usage { lastUsage = usage }
+                hasYieldedChunks = true
                 continuation.yield(chunk)
             }
         } catch {
             if let reservation {
                 await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
+            }
+            // If we already yielded chunks to the consumer, fallback would
+            // corrupt output (partial from provider 1 + full from provider 2).
+            // Wrap in StreamingFallbackUnsafe to signal the retry loop to stop.
+            if hasYieldedChunks {
+                throw StreamingFallbackUnsafe(underlying: error)
             }
             throw error
         }
@@ -300,6 +314,12 @@ private extension SwiftAI {
         await finalizeCost(reservation: reservation, usage: lastUsage, provider: provider)
         continuation.finish()
     }
+}
+
+/// Sentinel error: a streaming provider failed after already yielding chunks.
+/// Retrying with another provider would corrupt the consumer's output stream.
+private struct StreamingFallbackUnsafe: Error {
+    let underlying: any Error
 }
 
 /// Configuration options for individual requests

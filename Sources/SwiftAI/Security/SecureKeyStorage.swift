@@ -29,7 +29,12 @@ public struct SecureKeyStorage: Sendable {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
+        let deleteStatus = SecItemDelete(deleteQuery as CFDictionary)
+        // errSecItemNotFound is expected when storing for the first time.
+        // Any other failure indicates a Keychain permissions or corruption issue.
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            throw SwiftAIError.keychainError(status: deleteStatus)
+        }
 
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

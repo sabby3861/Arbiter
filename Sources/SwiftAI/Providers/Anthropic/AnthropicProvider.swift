@@ -163,14 +163,24 @@ private extension AnthropicProvider {
     ) async throws {
         var accumulated = ""
         var currentEventData = ""
+        var streamInputTokens: Int?
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
 
             if line.hasPrefix("data: ") {
-                currentEventData = String(line.dropFirst(6))
+                // SSE spec: multiple `data:` lines before a blank line are
+                // concatenated with newlines to form a single event payload.
+                if currentEventData.isEmpty {
+                    currentEventData = String(line.dropFirst(6))
+                } else {
+                    currentEventData += "\n" + String(line.dropFirst(6))
+                }
             } else if line.isEmpty, !currentEventData.isEmpty {
-                if let chunk = mapper.parseStreamEvent(currentEventData, accumulated: &accumulated) {
+                if let chunk = mapper.parseStreamEvent(
+                    currentEventData, accumulated: &accumulated,
+                    streamInputTokens: &streamInputTokens
+                ) {
                     continuation.yield(chunk)
                 }
                 currentEventData = ""
@@ -178,7 +188,10 @@ private extension AnthropicProvider {
         }
 
         if !currentEventData.isEmpty,
-           let chunk = mapper.parseStreamEvent(currentEventData, accumulated: &accumulated) {
+           let chunk = mapper.parseStreamEvent(
+               currentEventData, accumulated: &accumulated,
+               streamInputTokens: &streamInputTokens
+           ) {
             continuation.yield(chunk)
         }
     }
@@ -228,7 +241,7 @@ private extension AnthropicProvider {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let error = json["error"] as? [String: Any],
               let message = error["message"] as? String else {
-            return "Unknown error"
+            return body.isEmpty ? "Unknown error" : String(body.prefix(500))
         }
         return message
     }

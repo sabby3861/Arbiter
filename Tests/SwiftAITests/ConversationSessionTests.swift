@@ -111,9 +111,25 @@ struct ConversationSessionTests {
             try await session.send("Bad", using: ai)
         }
 
-        // User message was added, but no assistant message
-        #expect(session.messages.count == 1)
+        // Orphaned user message is removed on error to keep conversation consistent
+        #expect(session.messages.isEmpty)
         #expect(!session.isGenerating)
+    }
+
+    @Test @MainActor func sendRejectsWhileGenerating() async throws {
+        let ai = SwiftAI(provider: MockProvider(responseContent: "Reply"))
+        let session = ConversationSession()
+
+        // Simulate isGenerating state via streaming
+        let stream = session.sendStreaming("First", using: ai)
+
+        // While streaming is active, send() should throw
+        await #expect(throws: SwiftAIError.self) {
+            try await session.send("Second", using: ai)
+        }
+
+        // Consume the stream to clean up
+        for try await _ in stream {}
     }
 
     @Test @MainActor func streamingAppendsAssistantMessage() async throws {

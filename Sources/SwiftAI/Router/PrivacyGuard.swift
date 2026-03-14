@@ -63,12 +63,24 @@ public struct PrivacyGuard: Sendable {
 }
 
 extension PrivacyGuard {
+    /// Pre-compiled PII detection regexes — created once and reused across calls.
+    private static let compiledPIIPatterns: [NSRegularExpression] = {
+        let patterns = [
+            #"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"#,
+            #"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b"#,
+            #"\b\d{3}-\d{2}-\d{4}\b"#,
+            #"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"#,
+        ]
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    }()
+
     func containsPII(in request: AIRequest) -> Bool {
         let allText = extractText(from: request)
         guard !allText.isEmpty else { return false }
 
-        return piiPatterns.contains { pattern in
-            allText.range(of: pattern, options: .regularExpression) != nil
+        let range = NSRange(allText.startIndex..., in: allText)
+        return Self.compiledPIIPatterns.contains { regex in
+            regex.firstMatch(in: allText, range: range) != nil
         }
     }
 
@@ -76,14 +88,5 @@ extension PrivacyGuard {
         var parts = request.messages.compactMap { $0.content.text }
         if let system = request.systemPrompt { parts.append(system) }
         return parts.joined(separator: " ")
-    }
-
-    private var piiPatterns: [String] {
-        [
-            #"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"#,
-            #"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b"#,
-            #"\b\d{3}-\d{2}-\d{4}\b"#,
-            #"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"#,
-        ]
     }
 }
