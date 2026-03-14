@@ -22,6 +22,7 @@ public struct SwiftAIChatView: View {
     @State private var isStreaming = false
     @State private var streamingProvider: ProviderID?
     @State private var activeTask: Task<Void, Never>?
+    @State private var lastFailedMessage: String?
 
     public init(ai: SwiftAI) {
         self.ai = ai
@@ -160,6 +161,7 @@ public struct SwiftAIChatView: View {
             .buttonStyle(.bordered)
             Button {
                 lastError = nil
+                lastFailedMessage = nil
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
@@ -171,8 +173,9 @@ public struct SwiftAIChatView: View {
     }
 
     private func sendMessage() {
-        let text = trimmedInput
+        let text = lastFailedMessage ?? trimmedInput
         guard !text.isEmpty else { return }
+        lastFailedMessage = nil
         inputText = ""
         lastError = nil
 
@@ -209,6 +212,7 @@ public struct SwiftAIChatView: View {
                 // User cancelled
             } catch {
                 lastError = error
+                lastFailedMessage = text
                 if messages.last?.role == .user {
                     messages.removeLast()
                 }

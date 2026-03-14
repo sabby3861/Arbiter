@@ -275,7 +275,8 @@ private extension SwiftAI {
                 reason: "No providers configured. Add at least one provider via cloud(), local(), or system().")
         }
 
-        let request = buildRequest(messages: messages, options: options)
+        var request = buildRequest(messages: messages, options: options)
+        request = try await applyRequestMiddleware(request)
         let decision = await routeRequest(request, options: options)
 
         guard decision.isAvailable else {

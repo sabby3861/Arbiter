@@ -46,7 +46,9 @@ public struct RequestSanitiserMiddleware: AIMiddleware, Sendable {
         if let limiter = rateLimiter {
             let allowed = await limiter.tryAcquire()
             guard allowed else {
-                throw SwiftAIError.rateLimited(.anthropic, retryAfter: .seconds(60))
+                throw SwiftAIError.invalidRequest(
+                    reason: "Client rate limit exceeded: maximum \(requestsPerMinute!) requests per minute"
+                )
             }
         }
 
