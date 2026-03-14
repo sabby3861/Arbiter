@@ -80,6 +80,8 @@ public struct LoggingMiddleware: AIMiddleware, Sendable {
     }
 
     /// Redact known sensitive patterns from a string
+    private static let redactLogger = Logger(subsystem: "com.swiftai", category: "Redaction")
+
     public static func redact(_ text: String) -> String {
         var result = text
 
@@ -91,7 +93,6 @@ public struct LoggingMiddleware: AIMiddleware, Sendable {
              "$1: ***REDACTED***"),
         ]
 
-        let redactLogger = Logger(subsystem: "com.swiftai", category: "Redaction")
         for (pattern, replacement) in patterns {
             let regex: NSRegularExpression
             do {

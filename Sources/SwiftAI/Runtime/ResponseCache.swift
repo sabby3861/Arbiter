@@ -97,6 +97,12 @@ private struct CacheKey: Hashable, Sendable {
         hasher.combine(request.systemPrompt)
         hasher.combine(request.temperature)
         hasher.combine(request.maxTokens)
+        hasher.combine(request.topP)
+        if let tools = request.tools {
+            for tool in tools {
+                hasher.combine(tool.name)
+            }
+        }
         self.promptHash = hasher.finalize()
         self.provider = provider
     }

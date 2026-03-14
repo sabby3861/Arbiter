@@ -90,6 +90,7 @@ struct RetryEngine: Sendable {
         let capped = min(backoff, maxSeconds)
 
         let jitter = Double.random(in: 0...0.5) * capped
-        return .milliseconds(Int((capped + jitter) * 1000))
+        let total = min(capped + jitter, maxSeconds)
+        return .milliseconds(Int(total * 1000))
     }
 }

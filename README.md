@@ -313,6 +313,10 @@ Protects against prompt injection and abuse:
 - Rate limiting per minute
 - Rejects empty or whitespace-only prompts
 
+> **Note:** `PausableProvider` and `UnloadableProvider` are extension points —
+> implement them on your custom providers to enable automatic lifecycle management.
+> Built-in provider conformance is coming in a future release.
+
 ### Logging Middleware
 
 Structured logging with automatic credential redaction:
