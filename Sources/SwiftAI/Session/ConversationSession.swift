@@ -50,9 +50,9 @@ public final class ConversationSession: Identifiable {
             throw SwiftAIError.invalidRequest(reason: "A request is already in progress. Wait for it to complete or cancel it first.")
         }
 
+        isGenerating = true
         let userMessage = Message.user(text)
         messages.append(userMessage)
-        isGenerating = true
 
         do {
             trimToFitTokenWindow()
@@ -96,9 +96,9 @@ public final class ConversationSession: Identifiable {
 
         activeStreamTask?.cancel()
 
+        isGenerating = true
         let userMessage = Message.user(text)
         messages.append(userMessage)
-        isGenerating = true
         trimToFitTokenWindow()
 
         let currentMessages = messages

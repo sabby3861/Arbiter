@@ -319,7 +319,7 @@ private extension SwiftAI {
 /// Sentinel error: a streaming provider failed after already yielding chunks.
 /// Retrying with another provider would corrupt the consumer's output stream.
 private struct StreamingFallbackUnsafe: Error {
-    let underlying: any Error
+    let underlying: any Error & Sendable
 }
 
 /// Configuration options for individual requests
