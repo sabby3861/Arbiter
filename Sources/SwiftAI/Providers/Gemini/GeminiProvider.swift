@@ -140,9 +140,10 @@ private extension GeminiProvider {
         var accumulated = ""
         for try await line in bytes.lines {
             try Task.checkCancellation()
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            guard line.hasPrefix("data: ") else { continue }
-            let eventData = String(line.dropFirst(6))
+            guard trimmedLine.hasPrefix("data: ") else { continue }
+            let eventData = String(trimmedLine.dropFirst(6))
 
             if let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated) {
                 continuation.yield(chunk)
