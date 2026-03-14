@@ -236,6 +236,107 @@ Text("AI Feature")
     }
 ```
 
+## SwiftUI Components
+
+Drop-in UI components that work with any SwiftAI configuration.
+
+### Chat Interface
+
+```swift
+import SwiftAI
+
+struct ContentView: View {
+    let ai: SwiftAI
+
+    var body: some View {
+        SwiftAIChatView(ai: ai)
+        // Or with a system prompt:
+        // SwiftAIChatView(ai: ai, systemPrompt: "You are a helpful assistant.")
+    }
+}
+```
+
+Features: message bubbles, streaming animation, provider badge on each response, error handling with retry button, dark mode support.
+
+### Provider Picker
+
+```swift
+ProviderPicker(ai: ai) { selectedProvider in
+    // Override routing for this session
+}
+```
+
+Lists configured providers with real-time availability status and tier badges (Cloud/Local/On-Device/System).
+
+### Usage Dashboard
+
+```swift
+UsageDashboard(analytics: analytics)
+```
+
+Shows total requests, tokens used, estimated cost, per-provider breakdown with bar charts, and month-over-month comparison.
+
+### Routing Debug View
+
+```swift
+RoutingDebugView(router: ai.smartRouter)
+```
+
+Live feed of routing decisions — shows timestamp, selected provider, reason, fallbacks, and contributing factors. Color-coded by provider tier.
+
+### Lifecycle Management
+
+```swift
+ContentView()
+    .swiftAILifecycle(ai)
+```
+
+Automatically pauses on-device providers when the app backgrounds, responds to memory warnings by unloading models, and resumes on foreground.
+
+## Middleware
+
+Process requests and responses through a configurable pipeline:
+
+```swift
+let ai = SwiftAI {
+    $0.cloud(anthropicProvider)
+    $0.middleware(LoggingMiddleware(logLevel: .standard))
+    $0.middleware(RequestSanitiserMiddleware(requestsPerMinute: 30))
+}
+```
+
+### Request Sanitiser
+
+Protects against prompt injection and abuse:
+- Blocks prompts exceeding maximum length
+- Detects known injection patterns ("ignore previous instructions", etc.)
+- Rate limiting per minute
+- Rejects empty or whitespace-only prompts
+
+### Logging Middleware
+
+Structured logging with automatic credential redaction:
+- API keys: `sk-ant-api03-...` → `sk-ant-***REDACTED***`
+- Bearer tokens: `Bearer eyJ...` → `Bearer ***REDACTED***`
+- Optional prompt text redaction for privacy-sensitive apps
+- Configurable log levels: `.none`, `.minimal`, `.standard`, `.verbose`
+- Output to `os.Logger` or custom destination
+
+### Response Cache
+
+In-memory cache to reduce API costs:
+```swift
+let cache = ResponseCache(maxEntries: 500, ttl: .seconds(300))
+```
+
+### Usage Analytics
+
+Cross-session usage tracking with SwiftUI binding:
+```swift
+let analytics = UsageAnalytics()
+let snapshot = await analytics.snapshot() // UsageSnapshot is @Observable
+```
+
 ## Why SwiftAI?
 
 ### The Three-Tier Problem
@@ -269,12 +370,34 @@ MLX support is included as an optional dependency — it compiles only on macOS 
 
 ## Security
 
-- API keys stored in Keychain via `SecureKeyStorage`
-- Spending guards with per-request and daily limits
-- Privacy routing ensures sensitive data never leaves the device
-- PII auto-detection (email, phone, SSN, credit card patterns)
-- API keys automatically redacted from logs
-- Compile-time deprecation warnings on raw API key strings
+SwiftAI is designed with security defaults, not security afterthoughts.
+
+**API key protection**: Keys are stored in the iOS Keychain by default.
+Hardcoded key strings trigger a deprecation warning at compile time.
+
+**Privacy routing**: Tag requests as `.private`, `.health`, or `.financial`
+to ensure they never leave the device. The smart router enforces this.
+
+**Spending limits**: Set monthly and per-request budget caps. When limits
+are reached, SwiftAI falls back to free on-device providers automatically.
+
+**PII detection**: Optional prompt scanning catches email addresses, phone
+numbers, and other patterns before they reach cloud APIs.
+
+**Redacted logging**: API keys and sensitive headers are automatically
+redacted in all log output.
+
+**Request sanitization**: Built-in middleware catches prompt injection attempts
+and enforces rate limits.
+
+For production apps, we strongly recommend:
+1. Use `SecureKeyStorage` (Keychain) instead of hardcoded API keys
+2. Set up a server-side proxy for API calls (your key stays on your server)
+3. Enable `.privacy(.strict)` for any app handling personal data
+4. Set spending limits with `SpendingGuard`
+5. Add `RequestSanitiserMiddleware` to catch injection attempts
+
+See our [Security Guide](Documentation/SecurityGuide.md) for detailed best practices.
 
 ## Roadmap
 
@@ -295,7 +418,11 @@ MLX support is included as an optional dependency — it compiles only on macOS 
 - [x] Environment-aware routing (connectivity, thermal, budget)
 - [x] MLX on-device provider
 - [x] Apple Foundation Models provider
-- [ ] SwiftUI components
+- [x] SwiftUI components (ChatView, ProviderPicker, UsageDashboard, RoutingDebugView)
+- [x] Middleware pipeline (logging, sanitization, caching)
+- [x] Usage analytics with cross-session persistence
+- [x] Lifecycle management for on-device providers
+- [x] Security documentation and proxy architecture guide
 
 ## License
 

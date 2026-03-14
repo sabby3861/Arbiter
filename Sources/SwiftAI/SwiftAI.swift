@@ -32,6 +32,13 @@ public final class SwiftAI: Sendable {
     private let spendingGuard: SpendingGuard?
     private let router: SmartRouter
     private let costTracker: CostTracker
+    private let middlewares: [any AIMiddleware]
+
+    /// Registered providers, exposed for UI components like `ProviderPicker`
+    public var registeredProviders: [any AIProvider] { providers }
+
+    /// The smart router, exposed for `RoutingDebugView`
+    public var smartRouter: SmartRouter { router }
 
     /// Create SwiftAI with a single provider
     public init(provider: any AIProvider) {
@@ -40,6 +47,7 @@ public final class SwiftAI: Sendable {
         self.spendingGuard = nil
         self.router = SmartRouter()
         self.costTracker = CostTracker()
+        self.middlewares = []
     }
 
     /// Create SwiftAI with full configuration (non-throwing)
@@ -51,6 +59,7 @@ public final class SwiftAI: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(privacyGuard: config.privacyGuard)
         self.costTracker = CostTracker()
+        self.middlewares = config.middlewares
     }
 
     /// Create SwiftAI with full configuration (throwing, for Keychain-based providers)
@@ -62,6 +71,7 @@ public final class SwiftAI: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(privacyGuard: config.privacyGuard)
         self.costTracker = CostTracker()
+        self.middlewares = config.middlewares
     }
 
     /// Generate a response from a simple text prompt
@@ -126,21 +136,38 @@ private extension SwiftAI {
     }
 
     func executeGenerate(request: AIRequest, provider: any AIProvider) async throws -> AIResponse {
-        let reservation = try await reserveBudget(for: provider, request: request)
+        let processedRequest = try await applyRequestMiddleware(request)
+        let reservation = try await reserveBudget(for: provider, request: processedRequest)
         do {
             let response = try await withTaskCancellationHandler {
-                try await provider.generate(request)
+                try await provider.generate(processedRequest)
             } onCancel: {
                 logger.debug("Generate cancelled for \(provider.id.rawValue)")
             }
             await finalizeCost(reservation: reservation, usage: response.usage, provider: provider)
-            return response
+            return try await applyResponseMiddleware(response)
         } catch {
             if let reservation {
                 await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
             }
             throw error
         }
+    }
+
+    func applyRequestMiddleware(_ request: AIRequest) async throws -> AIRequest {
+        var processed = request
+        for middleware in middlewares {
+            processed = try await middleware.process(processed)
+        }
+        return processed
+    }
+
+    func applyResponseMiddleware(_ response: AIResponse) async throws -> AIResponse {
+        var processed = response
+        for middleware in middlewares {
+            processed = try await middleware.process(processed)
+        }
+        return processed
     }
 
     func routeRequest(_ request: AIRequest, options: RequestOptions?) async -> RoutingDecision {
@@ -363,6 +390,7 @@ public struct Configuration: Sendable {
     var routingPolicy: RoutingPolicy = .firstAvailable
     var spendingGuard: SpendingGuard?
     var privacyGuard: PrivacyGuard?
+    var middlewares: [any AIMiddleware] = []
 
     /// Add a cloud provider (e.g., Anthropic, OpenAI)
     public mutating func cloud(_ provider: any AIProvider) {
@@ -397,5 +425,10 @@ public struct Configuration: Sendable {
     /// Set privacy enforcement level
     public mutating func privacy(_ guard: PrivacyGuard) {
         privacyGuard = `guard`
+    }
+
+    /// Add a middleware to the processing pipeline
+    public mutating func middleware(_ middleware: any AIMiddleware) {
+        middlewares.append(middleware)
     }
 }
