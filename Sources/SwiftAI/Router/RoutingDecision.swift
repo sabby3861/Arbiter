@@ -57,3 +57,17 @@ public enum RoutingEvent: Sendable, Equatable {
     case fallback(from: ProviderID, to: ProviderID, reason: String)
     case allProvidersFailed
 }
+
+/// A recorded routing decision for the debug view
+public struct RoutingDebugEntry: Identifiable, Sendable {
+    public let id = UUID()
+    public let timestamp: Date
+    public let requestSummary: String
+    public let decision: RoutingDecision
+
+    public init(timestamp: Date = Date(), requestSummary: String, decision: RoutingDecision) {
+        self.timestamp = timestamp
+        self.requestSummary = requestSummary
+        self.decision = decision
+    }
+}

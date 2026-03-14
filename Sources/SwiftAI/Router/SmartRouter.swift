@@ -14,6 +14,8 @@ public actor SmartRouter {
     private let connectivityCheck: @Sendable () async -> ConnectivityState
     private let deviceAssessment: @Sendable () -> DeviceCapabilities
     private let privacyGuard: PrivacyGuard?
+    private var _recentDecisions: [RoutingDebugEntry] = []
+    private let maxHistorySize = 100
 
     public init(
         privacyGuard: PrivacyGuard? = nil,
@@ -32,24 +34,43 @@ public actor SmartRouter {
         providers: [any AIProvider],
         budgetRemaining: Double?
     ) async -> RoutingDecision {
-        if case .fixed(let id) = policy.strategy {
-            return fixedRoute(id, providers: providers)
-        }
+        let decision: RoutingDecision
 
-        if case .priority(let order) = policy.strategy {
-            return await priorityRoute(
+        if case .fixed(let id) = policy.strategy {
+            decision = fixedRoute(id, providers: providers)
+        } else if case .priority(let order) = policy.strategy {
+            decision = await priorityRoute(
                 order, request: request, policy: policy, providers: providers
+            )
+        } else {
+            decision = await smartRoute(
+                request, policy: policy, providers: providers,
+                budgetRemaining: budgetRemaining
             )
         }
 
-        return await smartRoute(
-            request, policy: policy, providers: providers,
-            budgetRemaining: budgetRemaining
-        )
+        recordDecision(request: request, decision: decision)
+        return decision
     }
+
+    /// Recent routing decisions for debug views
+    public var recentDecisions: [RoutingDebugEntry] { _recentDecisions }
 }
 
 private extension SmartRouter {
+    func recordDecision(request: AIRequest, decision: RoutingDecision) {
+        let firstMessageText = request.messages.first?.content.text ?? "[non-text]"
+        let summary = String(firstMessageText.prefix(80))
+        let entry = RoutingDebugEntry(
+            requestSummary: summary,
+            decision: decision
+        )
+        _recentDecisions.append(entry)
+        if _recentDecisions.count > maxHistorySize {
+            _recentDecisions.removeFirst(_recentDecisions.count - maxHistorySize)
+        }
+    }
+
     func fixedRoute(_ id: ProviderID, providers: [any AIProvider]) -> RoutingDecision {
         let alternatives = providers.filter { $0.id != id }.map(\.id)
         guard providers.contains(where: { $0.id == id }) else {
