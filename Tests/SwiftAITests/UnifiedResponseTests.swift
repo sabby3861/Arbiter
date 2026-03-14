@@ -8,8 +8,6 @@ import Testing
 @Suite("Unified Response Types")
 struct UnifiedResponseTests {
 
-    // MARK: - All providers produce identical AIResponse structure
-
     @Test func allProvidersProduceAIResponse() throws {
         let openAIMapper = OpenAIMapper(defaultModel: .gpt4o)
         let geminiMapper = GeminiMapper(defaultModel: .flash25)
@@ -45,8 +43,6 @@ struct UnifiedResponseTests {
         #expect(anthropic.finishReason == .complete)
         #expect(ollama.finishReason == .complete)
     }
-
-    // MARK: - All providers produce identical AIStreamChunk structure
 
     @Test func allProvidersProduceStreamChunks() {
         let openAIMapper = OpenAIMapper(defaultModel: .gpt4o)
@@ -114,8 +110,6 @@ struct UnifiedResponseTests {
         #expect(ollamaChunk?.provider == .ollama)
     }
 
-    // MARK: - TokenUsage equality
-
     @Test func tokenUsageEquality() {
         let a = TokenUsage(inputTokens: 10, outputTokens: 20)
         let b = TokenUsage(inputTokens: 10, outputTokens: 20)
@@ -126,8 +120,6 @@ struct UnifiedResponseTests {
         #expect(a.totalTokens == 30)
     }
 }
-
-// MARK: - Sample response builders
 
 private func makeOpenAIData() throws -> Data {
     let json: [String: Any] = [

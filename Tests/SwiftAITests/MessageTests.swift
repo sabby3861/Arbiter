@@ -92,8 +92,6 @@ struct MessageTests {
         #expect(decoded.content == "Sunny, 72°F")
     }
 
-    // MARK: - isImage
-
     @Test func textIsNotImage() {
         #expect(!MessageContent.text("hello").isImage)
     }

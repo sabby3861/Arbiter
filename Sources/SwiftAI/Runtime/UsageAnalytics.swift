@@ -30,7 +30,6 @@ public actor UsageAnalytics {
         }
     }
 
-    /// Internal init for testing without UserDefaults side effects
     init(defaults: UserDefaults) {
         self.defaults = defaults
     }

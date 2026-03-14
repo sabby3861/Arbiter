@@ -111,8 +111,6 @@ public struct ToolDefinition: Sendable, Equatable, Codable {
     }
 }
 
-// MARK: - Codable
-
 extension MessageContent: Codable {
     enum CodingKeys: String, CodingKey {
         case type, text, image, toolCall, toolResult, parts

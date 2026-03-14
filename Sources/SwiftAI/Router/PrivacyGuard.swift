@@ -63,7 +63,6 @@ public struct PrivacyGuard: Sendable {
 }
 
 extension PrivacyGuard {
-    /// Pre-compiled PII detection regexes — created once and reused across calls.
     private static let compiledPIIPatterns: [NSRegularExpression] = {
         let patterns = [
             #"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"#,

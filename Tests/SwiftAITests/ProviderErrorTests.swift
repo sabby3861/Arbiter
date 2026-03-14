@@ -8,8 +8,6 @@ import Testing
 @Suite("Provider Error Handling")
 struct ProviderErrorTests {
 
-    // MARK: - OpenAI Error Mapping
-
     @Test func openAIEmptyChoicesReturnsEmptyContent() throws {
         let mapper = OpenAIMapper(defaultModel: .gpt4o)
         let responseJSON: [String: Any] = [
@@ -64,8 +62,6 @@ struct ProviderErrorTests {
         #expect(response.finishReason == .contentFilter)
     }
 
-    // MARK: - Gemini Error Mapping
-
     @Test func geminiSafetyFilter() throws {
         let mapper = GeminiMapper(defaultModel: .flash25)
         let responseJSON: [String: Any] = [
@@ -109,8 +105,6 @@ struct ProviderErrorTests {
         #expect(response.content == "")
     }
 
-    // MARK: - Anthropic Error Mapping
-
     @Test func anthropicMaxTokensStopReason() throws {
         let mapper = AnthropicMapper(defaultModel: .claude4Sonnet)
         let responseJSON: [String: Any] = [
@@ -150,8 +144,6 @@ struct ProviderErrorTests {
         #expect(response.toolCalls[0].name == "calculator")
         #expect(response.toolCalls[0].id == "tool_123")
     }
-
-    // MARK: - Ollama Error Mapping
 
     @Test func ollamaEmptyResponse() throws {
         let mapper = OllamaMapper(defaultModel: "llama3.2")

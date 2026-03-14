@@ -47,7 +47,7 @@ public struct RequestSanitiserMiddleware: AIMiddleware, Sendable {
             let allowed = await limiter.tryAcquire()
             guard allowed else {
                 throw SwiftAIError.invalidRequest(
-                    reason: "Client rate limit exceeded: maximum \(requestsPerMinute!) requests per minute"
+                    reason: "Client rate limit exceeded: maximum \(limiter.maxRequestsPerMinute) requests per minute"
                 )
             }
         }
@@ -115,10 +115,12 @@ private extension RequestSanitiserMiddleware {
 
 /// Simple sliding-window rate limiter
 actor RateLimiter {
+    let maxRequestsPerMinute: Int
     private let maxRequests: Int
     private var timestamps: [Date] = []
 
     init(maxRequests: Int) {
+        self.maxRequestsPerMinute = maxRequests
         self.maxRequests = maxRequests
     }
 
