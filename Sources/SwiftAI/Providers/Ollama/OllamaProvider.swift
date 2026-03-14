@@ -172,9 +172,10 @@ private extension OllamaProvider {
         var accumulated = ""
         for try await line in bytes.lines {
             try Task.checkCancellation()
-            guard !line.isEmpty else { continue }
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedLine.isEmpty else { continue }
 
-            if let chunk = mapper.parseStreamLine(line, accumulated: &accumulated) {
+            if let chunk = mapper.parseStreamLine(trimmedLine, accumulated: &accumulated) {
                 continuation.yield(chunk)
             }
         }

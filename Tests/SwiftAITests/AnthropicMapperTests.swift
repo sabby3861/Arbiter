@@ -236,6 +236,42 @@ struct AnthropicMapperTests {
         #expect(apiMessages[0]["role"] as? String == "user")
     }
 
+    @Test func parseStreamEventWithLeadingTrailingWhitespace() {
+        var accumulated = ""
+        var streamInputTokens: Int?
+        // Simulate whitespace that URLSession.AsyncBytes.lines may leave
+        let eventData = "  {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}  "
+
+        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        #expect(chunk?.delta == "Hello")
+        #expect(chunk?.accumulatedContent == "Hello")
+        #expect(chunk?.isComplete == false)
+    }
+
+    @Test func parseStreamEventEmptyDataReturnsNil() {
+        var accumulated = ""
+        var streamInputTokens: Int?
+
+        let chunk1 = mapper.parseStreamEvent("", accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        #expect(chunk1 == nil)
+
+        let chunk2 = mapper.parseStreamEvent("   ", accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        #expect(chunk2 == nil)
+
+        #expect(accumulated == "")
+    }
+
+    @Test func parseStreamEventUnknownTypeReturnsNil() {
+        var accumulated = ""
+        var streamInputTokens: Int?
+        let eventData = """
+        {"type":"ping"}
+        """
+
+        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        #expect(chunk == nil)
+    }
+
     @Test func parseInvalidJSONThrowsDecodingError() throws {
         let invalidData = Data("not json".utf8)
 

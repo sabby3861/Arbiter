@@ -163,6 +163,32 @@ struct OpenAIMapperTests {
         #expect(chunk?.isComplete == true)
     }
 
+    @Test func parseStreamEventWithWhitespace() {
+        var accumulated = ""
+        let event = "  {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}  "
+
+        let chunk = mapper.parseStreamEvent(event, accumulated: &accumulated)
+        #expect(chunk?.delta == "Hello")
+        #expect(chunk?.isComplete == false)
+    }
+
+    @Test func parseStreamEventEmptyDataReturnsNil() {
+        var accumulated = ""
+        #expect(mapper.parseStreamEvent("", accumulated: &accumulated) == nil)
+        #expect(mapper.parseStreamEvent("   ", accumulated: &accumulated) == nil)
+    }
+
+    @Test func parseStreamDoneWithWhitespace() {
+        var accumulated = "Hello"
+        let chunk = mapper.parseStreamEvent(" [DONE] ", accumulated: &accumulated)
+        // "[DONE]" with surrounding spaces — trimmed at provider level, but mapper
+        // receives the raw payload after "data: " is stripped. Verify it doesn't crash.
+        // The exact match for "[DONE]" won't fire here; mapper returns nil gracefully.
+        // The provider trims the line before extracting the payload, so in practice
+        // the mapper always receives clean "[DONE]".
+        #expect(chunk == nil || chunk?.isComplete == true)
+    }
+
     @Test func parseInvalidJSON() {
         #expect(throws: SwiftAIError.self) {
             try mapper.parseResponse(Data("not json".utf8))

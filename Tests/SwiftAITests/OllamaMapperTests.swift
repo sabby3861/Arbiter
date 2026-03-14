@@ -130,6 +130,21 @@ struct OllamaMapperTests {
         #expect(chunk2?.accumulatedContent == "Hello world")
     }
 
+    @Test func parseStreamLineWithWhitespace() {
+        var accumulated = ""
+        let line = "  {\"model\":\"llama3.2\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"done\":false}  "
+
+        let chunk = mapper.parseStreamLine(line, accumulated: &accumulated)
+        #expect(chunk?.delta == "Hi")
+        #expect(chunk?.isComplete == false)
+    }
+
+    @Test func parseStreamLineEmptyReturnsNil() {
+        var accumulated = ""
+        #expect(mapper.parseStreamLine("", accumulated: &accumulated) == nil)
+        #expect(mapper.parseStreamLine("   ", accumulated: &accumulated) == nil)
+    }
+
     @Test func parseInvalidJSON() {
         #expect(throws: SwiftAIError.self) {
             try mapper.parseResponse(Data("broken".utf8))

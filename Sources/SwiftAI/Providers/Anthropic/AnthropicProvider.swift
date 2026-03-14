@@ -167,16 +167,18 @@ private extension AnthropicProvider {
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            if line.hasPrefix("data: ") {
+            if trimmedLine.hasPrefix("data: ") {
                 // SSE spec: multiple `data:` lines before a blank line are
                 // concatenated with newlines to form a single event payload.
+                let payload = String(trimmedLine.dropFirst(6))
                 if currentEventData.isEmpty {
-                    currentEventData = String(line.dropFirst(6))
+                    currentEventData = payload
                 } else {
-                    currentEventData += "\n" + String(line.dropFirst(6))
+                    currentEventData += "\n" + payload
                 }
-            } else if line.isEmpty, !currentEventData.isEmpty {
+            } else if trimmedLine.isEmpty, !currentEventData.isEmpty {
                 if let chunk = mapper.parseStreamEvent(
                     currentEventData, accumulated: &accumulated,
                     streamInputTokens: &streamInputTokens
