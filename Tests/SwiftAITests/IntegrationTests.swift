@@ -168,7 +168,7 @@ struct IntegrationTests {
 
     // MARK: - Conflicting flags
 
-    @Test func forceLocalAndForceCloudConflictYieldsEmpty() async throws {
+    @Test func forceLocalAndForceCloudConflictFavorsLocal() async throws {
         var policy = RoutingPolicy.smart
         policy.forceLocal = true
         policy.forceCloud = true
@@ -179,9 +179,10 @@ struct IntegrationTests {
             $0.routing(policy)
         }
 
-        await #expect(throws: SwiftAIError.self) {
-            try await ai.generate("Hello")
-        }
+        // When both flags conflict, forceLocal takes precedence —
+        // the request should succeed using the local provider.
+        let response = try await ai.generate("Hello")
+        #expect(response.provider == .mlx)
     }
 
     // MARK: - Edge cases

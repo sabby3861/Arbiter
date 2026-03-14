@@ -15,6 +15,7 @@ public enum SwiftAIError: Error, Sendable {
     case contentFiltered(reason: String)
     case allProvidersFailed(attempts: [(ProviderID, any Error & Sendable)])
     case budgetExceeded(spent: Double, limit: Double)
+    case dailyLimitExceeded(count: Int, limit: Int)
     case deviceNotCapable(reason: String)
     case decodingFailed(context: String)
     case httpError(statusCode: Int, body: String)
@@ -48,6 +49,8 @@ extension SwiftAIError: LocalizedError {
             "All \(attempts.count) provider(s) failed"
         case .budgetExceeded(let spent, let limit):
             "Budget exceeded: spent $\(String(format: "%.4f", spent)) of $\(String(format: "%.4f", limit)) limit"
+        case .dailyLimitExceeded(let count, let limit):
+            "Daily request limit exceeded: \(count) of \(limit) requests used"
         case .deviceNotCapable(let reason):
             "Device not capable: \(reason)"
         case .decodingFailed(let context):
@@ -85,6 +88,8 @@ extension SwiftAIError: LocalizedError {
             "Check provider configurations and network connectivity."
         case .budgetExceeded:
             "Increase your spending limit or switch to a free/local provider."
+        case .dailyLimitExceeded:
+            "Wait until tomorrow or increase your daily request limit."
         case .deviceNotCapable:
             "Use a cloud provider instead, or upgrade your device."
         case .decodingFailed:

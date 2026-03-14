@@ -73,11 +73,13 @@ struct UnifiedResponseTests {
             accumulated: &accGemini
         )
 
+        var streamInputTokens: Int?
         let anthropicChunk = anthropicMapper.parseStreamEvent(
             """
             {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}
             """,
-            accumulated: &accAnthropic
+            accumulated: &accAnthropic,
+            streamInputTokens: &streamInputTokens
         )
 
         let ollamaChunk = ollamaMapper.parseStreamLine(

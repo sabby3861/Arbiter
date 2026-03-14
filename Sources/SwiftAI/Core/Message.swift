@@ -86,10 +86,14 @@ public struct ToolCall: Sendable, Equatable, Codable {
 /// The result of a tool invocation
 public struct ToolResult: Sendable, Equatable, Codable {
     public let toolCallId: String
+    /// The function name that produced this result.
+    /// Required by some providers (e.g. Gemini) to correlate responses.
+    public let name: String?
     public let content: String
 
-    public init(toolCallId: String, content: String) {
+    public init(toolCallId: String, name: String? = nil, content: String) {
         self.toolCallId = toolCallId
+        self.name = name
         self.content = content
     }
 }

@@ -25,15 +25,23 @@ struct SpendingGuardAdvancedTests {
 
     // MARK: - Daily request limit
 
-    @Test func dailyRequestLimitBlocks() async throws {
+    @Test func dailyRequestLimitThrowsDailyLimitExceeded() async throws {
         let guard_ = SpendingGuard(budgetLimit: 100.0, dailyRequestLimit: 3)
 
         _ = try await guard_.reserveBudget(estimatedCost: 0.01)
         _ = try await guard_.reserveBudget(estimatedCost: 0.01)
         _ = try await guard_.reserveBudget(estimatedCost: 0.01)
 
-        await #expect(throws: SwiftAIError.self) {
+        do {
             _ = try await guard_.reserveBudget(estimatedCost: 0.01)
+            Issue.record("Expected dailyLimitExceeded to be thrown")
+        } catch let error as SwiftAIError {
+            guard case .dailyLimitExceeded(let count, let limit) = error else {
+                Issue.record("Expected dailyLimitExceeded but got \(error)")
+                return
+            }
+            #expect(count == 3)
+            #expect(limit == 3)
         }
     }
 
@@ -71,6 +79,18 @@ struct SpendingGuardAdvancedTests {
     @Test func fallbackToCheaperActionFallsBack() {
         let guard_ = SpendingGuard(budgetLimit: 10.0, limitAction: .fallbackToCheaper)
         #expect(guard_.shouldFallbackOnBudgetExceeded)
+    }
+
+    @Test func fallbackToCheaperReturnsNilOnDailyLimit() async throws {
+        let guard_ = SpendingGuard(
+            budgetLimit: 100.0,
+            dailyRequestLimit: 1,
+            limitAction: .fallbackToCheaper
+        )
+        _ = try await guard_.reserveBudget(estimatedCost: 0.01)
+        // Second request hits daily limit — should return nil (fallback) not throw
+        let reservation = try await guard_.reserveBudget(estimatedCost: 0.01)
+        #expect(reservation == nil)
     }
 
     // MARK: - Combined limits

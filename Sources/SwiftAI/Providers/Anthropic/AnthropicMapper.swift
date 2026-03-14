@@ -85,7 +85,17 @@ struct AnthropicMapper: Sendable {
         )
     }
 
-    func parseStreamEvent(_ eventData: String, accumulated: inout String) -> AIStreamChunk? {
+    /// Parse a single SSE event during streaming.
+    ///
+    /// Anthropic's streaming API splits usage across two events:
+    /// - `message_start` contains `input_tokens` in `message.usage`
+    /// - `message_delta` contains `output_tokens` in `usage`
+    /// We capture both to build a complete `TokenUsage`.
+    func parseStreamEvent(
+        _ eventData: String,
+        accumulated: inout String,
+        streamInputTokens: inout Int?
+    ) -> AIStreamChunk? {
         guard let data = eventData.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let eventType = json["type"] as? String else {
@@ -93,6 +103,15 @@ struct AnthropicMapper: Sendable {
         }
 
         switch eventType {
+        case "message_start":
+            // Capture input token count from the initial message event
+            if let message = json["message"] as? [String: Any],
+               let usage = message["usage"] as? [String: Any],
+               let inputTokens = usage["input_tokens"] as? Int {
+                streamInputTokens = inputTokens
+            }
+            return nil
+
         case "content_block_delta":
             guard let delta = json["delta"] as? [String: Any],
                   let text = delta["text"] as? String else {
@@ -107,12 +126,23 @@ struct AnthropicMapper: Sendable {
             )
 
         case "message_delta":
-            let usage = extractUsage(from: json)
+            let outputTokens = (json["usage"] as? [String: Any])?["output_tokens"] as? Int
+            let usage: TokenUsage?
+            if let output = outputTokens {
+                usage = TokenUsage(
+                    inputTokens: streamInputTokens ?? 0,
+                    outputTokens: output
+                )
+            } else {
+                usage = nil
+            }
+            let stopReason = (json["delta"] as? [String: Any])?["stop_reason"] as? String
             return AIStreamChunk(
                 delta: "",
                 accumulatedContent: accumulated,
                 isComplete: true,
                 usage: usage,
+                finishReason: mapStopReason(stopReason),
                 provider: .anthropic
             )
 
@@ -141,7 +171,7 @@ private extension AnthropicMapper {
             content = text
 
         case .image(let source):
-            content = [textContentBlock(""), imageContentBlock(source)].compactMap { $0 }
+            content = [imageContentBlock(source)].compactMap { $0 }
 
         case .toolCall:
             return nil

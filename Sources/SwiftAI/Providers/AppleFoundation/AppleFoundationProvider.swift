@@ -52,8 +52,11 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
             throw SwiftAIError.providerUnavailable(.appleFoundation, reason: reason)
         }
 
-        let session = LanguageModelSession()
-        let prompt = buildPrompt(from: request)
+        // Pass systemPrompt as session instructions (not mixed into the prompt).
+        // LanguageModelSession applies its own chat template internally, so we
+        // pass only the latest user message to avoid double-formatting.
+        let session = LanguageModelSession(instructions: request.systemPrompt ?? "")
+        let prompt = latestUserMessage(from: request)
 
         do {
             let response = try await session.respond(to: prompt)
@@ -90,17 +93,18 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
 
 @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 private extension AppleFoundationProvider {
-    func buildPrompt(from request: AIRequest) -> String {
-        var parts: [String] = []
-        if let systemPrompt = request.systemPrompt {
-            parts.append(systemPrompt)
+    /// Extract the latest user message text from the request.
+    ///
+    /// `LanguageModelSession.respond(to:)` treats input as a single user turn and
+    /// applies Apple's internal chat template. Passing a pre-formatted conversation
+    /// string would lose role information. Multi-turn history is not supported in
+    /// this stateless-per-call approach — each call creates a new session.
+    func latestUserMessage(from request: AIRequest) -> String {
+        if let last = request.messages.last(where: { $0.role == .user }),
+           let text = last.content.text {
+            return text
         }
-        for message in request.messages {
-            if let text = message.content.text {
-                parts.append(text)
-            }
-        }
-        return parts.joined(separator: "\n\n")
+        return request.messages.last?.content.text ?? ""
     }
 
     func performStream(
@@ -114,8 +118,9 @@ private extension AppleFoundationProvider {
             throw SwiftAIError.providerUnavailable(.appleFoundation, reason: reason)
         }
 
-        let session = LanguageModelSession()
-        let prompt = buildPrompt(from: request)
+        // See generate() for why we use instructions + latest user message.
+        let session = LanguageModelSession(instructions: request.systemPrompt ?? "")
+        let prompt = latestUserMessage(from: request)
 
         let responseStream = session.streamResponse(to: prompt)
         var accumulated = ""

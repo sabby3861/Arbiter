@@ -108,14 +108,15 @@ struct GeminiMapper: Sendable {
             )
         }
 
-        let finishReason = firstCandidate["finishReason"] as? String
-        if finishReason != nil {
+        let finishReasonStr = firstCandidate["finishReason"] as? String
+        if finishReasonStr != nil {
             let usage = extractUsage(from: json)
             return AIStreamChunk(
                 delta: "",
                 accumulatedContent: accumulated,
                 isComplete: true,
                 usage: usage,
+                finishReason: mapFinishReason(finishReasonStr),
                 provider: .gemini
             )
         }
@@ -159,7 +160,7 @@ private extension GeminiMapper {
 
         case .toolResult(let result):
             parts.append(["functionResponse": [
-                "name": result.toolCallId,
+                "name": result.name ?? result.toolCallId,
                 "response": ["result": result.content],
             ]])
 

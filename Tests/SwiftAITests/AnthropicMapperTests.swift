@@ -161,11 +161,12 @@ struct AnthropicMapperTests {
 
     @Test func parseStreamContentDelta() {
         var accumulated = ""
+        var streamInputTokens: Int?
         let eventData = """
         {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
         """
 
-        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.accumulatedContent == "Hello")
         #expect(chunk?.isComplete == false)
@@ -174,6 +175,7 @@ struct AnthropicMapperTests {
 
     @Test func parseStreamAccumulation() {
         var accumulated = ""
+        var streamInputTokens: Int?
 
         let event1 = """
         {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}
@@ -182,34 +184,40 @@ struct AnthropicMapperTests {
         {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}
         """
 
-        _ = mapper.parseStreamEvent(event1, accumulated: &accumulated)
-        let chunk2 = mapper.parseStreamEvent(event2, accumulated: &accumulated)
+        _ = mapper.parseStreamEvent(event1, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk2 = mapper.parseStreamEvent(event2, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
 
         #expect(chunk2?.delta == "world")
         #expect(chunk2?.accumulatedContent == "Hello world")
     }
 
-    @Test func parseStreamMessageDelta() {
+    @Test func parseStreamMessageDeltaWithUsage() {
         var accumulated = "Hello world"
+        var streamInputTokens: Int? = 10
 
         let eventData = """
-        {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":5}}
+        {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
         """
 
-        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
         #expect(chunk?.isComplete == true)
         #expect(chunk?.accumulatedContent == "Hello world")
+        #expect(chunk?.usage?.inputTokens == 10)
+        #expect(chunk?.usage?.outputTokens == 5)
+        #expect(chunk?.finishReason == .complete)
     }
 
-    @Test func parseStreamIgnoresIrrelevantEvents() {
+    @Test func parseStreamMessageStartCapturesInputTokens() {
         var accumulated = ""
+        var streamInputTokens: Int?
 
         let messageStart = """
-        {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514"}}
+        {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":25,"output_tokens":0}}}
         """
 
-        let chunk = mapper.parseStreamEvent(messageStart, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(messageStart, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
         #expect(chunk == nil)
+        #expect(streamInputTokens == 25)
     }
 
     @Test func systemMessagesExcludedFromAPIMessages() throws {

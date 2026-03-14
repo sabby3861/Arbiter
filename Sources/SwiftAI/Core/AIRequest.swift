@@ -117,8 +117,20 @@ enum TokenEstimator {
     }
 
     /// Estimate token count across an array of messages.
+    ///
+    /// Non-text content (images, tool calls) contributes a minimum token
+    /// estimate to avoid returning 0 for image-heavy or tool-heavy requests.
     static func estimateTokens(for messages: [Message]) -> Int {
-        let charCount = messages.reduce(0) { $0 + ($1.content.text?.count ?? 0) }
-        return Int(Double(charCount) * tokensPerCharacter)
+        var estimate = 0
+        for message in messages {
+            if let text = message.content.text {
+                estimate += max(Int(Double(text.count) * tokensPerCharacter), 1)
+            } else {
+                // Non-text messages (images, tool calls) still consume tokens.
+                // Use a conservative minimum per message.
+                estimate += 100
+            }
+        }
+        return estimate
     }
 }

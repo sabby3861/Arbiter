@@ -46,24 +46,35 @@ public final class ConversationSession: Identifiable {
 
     /// Add a user message and generate a response using the given AI instance
     public func send(_ text: String, using ai: SwiftAI, options: RequestOptions? = nil) async throws {
+        guard !isGenerating else {
+            throw SwiftAIError.invalidRequest(reason: "A request is already in progress. Wait for it to complete or cancel it first.")
+        }
+
         let userMessage = Message.user(text)
         messages.append(userMessage)
         isGenerating = true
 
-        defer { isGenerating = false }
+        do {
+            trimToFitTokenWindow()
+            try Task.checkCancellation()
 
-        trimToFitTokenWindow()
+            let response = try await withTaskCancellationHandler {
+                try await ai.chat(messages, options: mergeOptions(options))
+            } onCancel: {
+                // URLSession will cancel the underlying network request
+            }
 
-        try Task.checkCancellation()
-
-        let response = try await withTaskCancellationHandler {
-            try await ai.chat(messages, options: mergeOptions(options))
-        } onCancel: {
-            // URLSession will cancel the underlying network request
+            let assistantMessage = Message.assistant(response.content)
+            messages.append(assistantMessage)
+            isGenerating = false
+        } catch {
+            // Remove the orphaned user message if no assistant reply was generated
+            if messages.last?.role == .user {
+                messages.removeLast()
+            }
+            isGenerating = false
+            throw error
         }
-
-        let assistantMessage = Message.assistant(response.content)
-        messages.append(assistantMessage)
     }
 
     /// Add a user message and stream the response
@@ -75,6 +86,14 @@ public final class ConversationSession: Identifiable {
         using ai: SwiftAI,
         options: RequestOptions? = nil
     ) -> AsyncThrowingStream<AIStreamChunk, Error> {
+        guard !isGenerating else {
+            return AsyncThrowingStream { continuation in
+                continuation.finish(throwing: SwiftAIError.invalidRequest(
+                    reason: "A request is already in progress. Wait for it to complete or cancel it first."
+                ))
+            }
+        }
+
         activeStreamTask?.cancel()
 
         let userMessage = Message.user(text)
@@ -88,16 +107,6 @@ public final class ConversationSession: Identifiable {
         return AsyncThrowingStream { continuation in
             let task = Task { [self] in
                 var lastContent = ""
-                defer {
-                    let content = lastContent
-                    Task { @MainActor [self] in
-                        if !content.isEmpty {
-                            self.messages.append(Message.assistant(content))
-                        }
-                        self.isGenerating = false
-                        self.activeStreamTask = nil
-                    }
-                }
 
                 do {
                     let stream = ai.chatStream(currentMessages, options: mergedOptions)
@@ -111,6 +120,20 @@ public final class ConversationSession: Identifiable {
                     continuation.finish(throwing: CancellationError())
                 } catch {
                     continuation.finish(throwing: error)
+                }
+
+                // Finalize state on the main actor synchronously within
+                // this task, avoiding the fire-and-forget race that a
+                // defer + detached Task { @MainActor } would cause.
+                await MainActor.run { [self] in
+                    if !lastContent.isEmpty {
+                        self.messages.append(Message.assistant(lastContent))
+                    } else if self.messages.last?.role == .user {
+                        // No content received — remove the orphaned user message
+                        self.messages.removeLast()
+                    }
+                    self.isGenerating = false
+                    self.activeStreamTask = nil
                 }
             }
 
