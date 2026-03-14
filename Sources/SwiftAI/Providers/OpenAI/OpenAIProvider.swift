@@ -109,7 +109,8 @@ public struct OpenAIProvider: AIProvider, Sendable {
     public func stream(_ request: AIRequest) -> AsyncThrowingStream<AIStreamChunk, Error> {
         // Some models (o1, o1-mini, o3-mini) don't support streaming.
         // Fall back to generate() wrapped as a single-chunk stream.
-        guard defaultModel.supportsStreaming else {
+        let resolvedModel = request.model.flatMap(OpenAIModel.init(rawValue:)) ?? defaultModel
+        guard resolvedModel.supportsStreaming else {
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
