@@ -15,7 +15,7 @@ public final class LifecycleManager {
     private let providers: [any AIProvider]
     private var isMonitoring = false
     #if os(macOS)
-    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    nonisolated(unsafe) private var memoryPressureSource: DispatchSourceMemoryPressure?
     #endif
 
     public init(providers: [any AIProvider]) {
