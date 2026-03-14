@@ -162,39 +162,21 @@ private extension AnthropicProvider {
         continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
     ) async throws {
         var accumulated = ""
-        var currentEventData = ""
         var streamInputTokens: Int?
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            if trimmedLine.hasPrefix("data: ") {
-                // SSE spec: multiple `data:` lines before a blank line are
-                // concatenated with newlines to form a single event payload.
-                let payload = String(trimmedLine.dropFirst(6))
-                if currentEventData.isEmpty {
-                    currentEventData = payload
-                } else {
-                    currentEventData += "\n" + payload
-                }
-            } else if trimmedLine.isEmpty, !currentEventData.isEmpty {
-                if let chunk = mapper.parseStreamEvent(
-                    currentEventData, accumulated: &accumulated,
-                    streamInputTokens: &streamInputTokens
-                ) {
-                    continuation.yield(chunk)
-                }
-                currentEventData = ""
-            }
-        }
+            guard trimmedLine.hasPrefix("data: ") else { continue }
+            let eventData = String(trimmedLine.dropFirst(6))
 
-        if !currentEventData.isEmpty,
-           let chunk = mapper.parseStreamEvent(
-               currentEventData, accumulated: &accumulated,
-               streamInputTokens: &streamInputTokens
-           ) {
-            continuation.yield(chunk)
+            if let chunk = mapper.parseStreamEvent(
+                eventData, accumulated: &accumulated,
+                streamInputTokens: &streamInputTokens
+            ) {
+                continuation.yield(chunk)
+            }
         }
     }
 
