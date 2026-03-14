@@ -33,7 +33,6 @@ public final class ConversationSession: Identifiable {
     public var systemPrompt: String?
 
     private let maxTokenEstimate: Int
-    private let tokensPerCharacterEstimate: Double = 0.25
     private var activeStreamTask: Task<Void, Never>?
 
     /// Create a conversation session
@@ -141,10 +140,7 @@ public final class ConversationSession: Identifiable {
 
 private extension ConversationSession {
     func estimateTokens(for messages: [Message]) -> Int {
-        let characterCount = messages.reduce(0) { total, message in
-            total + (message.content.text?.count ?? 0)
-        }
-        return Int(Double(characterCount) * tokensPerCharacterEstimate)
+        TokenEstimator.estimateTokens(for: messages)
     }
 
     func trimToFitTokenWindow() {

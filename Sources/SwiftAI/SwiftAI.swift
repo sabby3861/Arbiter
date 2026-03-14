@@ -224,47 +224,55 @@ private extension SwiftAI {
     ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                guard !self.providers.isEmpty else {
-                    continuation.finish(throwing: SwiftAIError.invalidRequest(
-                        reason: "No providers configured. Add at least one provider via cloud(), local(), or system()."))
-                    return
+                do {
+                    try await self.performStreamRouting(
+                        messages: messages, options: options, continuation: continuation
+                    )
+                } catch {
+                    continuation.finish(throwing: error)
                 }
-
-                let request = self.buildRequest(messages: messages, options: options)
-                let decision = await self.routeRequest(request, options: options)
-
-                guard decision.isAvailable else {
-                    continuation.finish(throwing: SwiftAIError.allProvidersFailed(attempts: []))
-                    return
-                }
-
-                let providerOrder = self.buildProviderOrder(from: decision)
-                let maxAttempts = self.routingPolicy.fallbackEnabled
-                    ? self.routingPolicy.maxRetries + 1 : 1
-                var lastError: (any Error)?
-
-                for providerID in providerOrder.prefix(maxAttempts) {
-                    guard let provider = self.providers.first(where: { $0.id == providerID })
-                    else { continue }
-                    do {
-                        try await self.executeStream(
-                            request: request, provider: provider, continuation: continuation
-                        )
-                        return
-                    } catch is CancellationError {
-                        continuation.finish(throwing: CancellationError())
-                        return
-                    } catch {
-                        lastError = error
-                        logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
-                    }
-                }
-
-                continuation.finish(throwing: lastError
-                    ?? SwiftAIError.allProvidersFailed(attempts: []))
             }
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
+    }
+
+    func performStreamRouting(
+        messages: [Message],
+        options: RequestOptions?,
+        continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
+    ) async throws {
+        guard !providers.isEmpty else {
+            throw SwiftAIError.invalidRequest(
+                reason: "No providers configured. Add at least one provider via cloud(), local(), or system().")
+        }
+
+        let request = buildRequest(messages: messages, options: options)
+        let decision = await routeRequest(request, options: options)
+
+        guard decision.isAvailable else {
+            throw SwiftAIError.allProvidersFailed(attempts: [])
+        }
+
+        let providerOrder = buildProviderOrder(from: decision)
+        let maxAttempts = routingPolicy.fallbackEnabled ? routingPolicy.maxRetries + 1 : 1
+        var lastError: (any Error)?
+
+        for providerID in providerOrder.prefix(maxAttempts) {
+            guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
+            do {
+                try await executeStream(
+                    request: request, provider: provider, continuation: continuation
+                )
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
+            }
+        }
+
+        throw lastError ?? SwiftAIError.allProvidersFailed(attempts: [])
     }
 
     func executeStream(
@@ -276,10 +284,17 @@ private extension SwiftAI {
         let stream = provider.stream(request)
         var lastUsage: TokenUsage?
 
-        for try await chunk in stream {
-            try Task.checkCancellation()
-            if let usage = chunk.usage { lastUsage = usage }
-            continuation.yield(chunk)
+        do {
+            for try await chunk in stream {
+                try Task.checkCancellation()
+                if let usage = chunk.usage { lastUsage = usage }
+                continuation.yield(chunk)
+            }
+        } catch {
+            if let reservation {
+                await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
+            }
+            throw error
         }
 
         await finalizeCost(reservation: reservation, usage: lastUsage, provider: provider)

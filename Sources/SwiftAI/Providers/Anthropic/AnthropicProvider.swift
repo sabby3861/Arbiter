@@ -95,17 +95,19 @@ public struct AnthropicProvider: AIProvider, Sendable {
         try Task.checkCancellation()
         let urlRequest = try buildURLRequest(for: request, stream: false)
 
-        let data: Data
+        let responseData: Data
         let httpResponse: HTTPURLResponse
         do {
-            let (responseData, response) = try await session.data(for: urlRequest)
+            let (data, response) = try await session.data(for: urlRequest)
             guard let http = response as? HTTPURLResponse else {
                 throw SwiftAIError.networkError(underlying: URLError(.badServerResponse))
             }
-            data = responseData
+            responseData = data
             httpResponse = http
         } catch let error as SwiftAIError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let urlError as URLError {
             logger.error("Network request failed: \(urlError.localizedDescription)")
             throw SwiftAIError.networkError(underlying: urlError)
@@ -114,9 +116,9 @@ public struct AnthropicProvider: AIProvider, Sendable {
             throw SwiftAIError.networkError(underlying: URLError(.unknown))
         }
 
-        try validateHTTPResponse(httpResponse, body: data)
+        try validateHTTPResponse(httpResponse, body: responseData)
 
-        return try mapper.parseResponse(data)
+        return try mapper.parseResponse(responseData)
     }
 
     public func stream(_ request: AIRequest) -> AsyncThrowingStream<AIStreamChunk, Error> {

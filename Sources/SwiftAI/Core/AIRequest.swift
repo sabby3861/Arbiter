@@ -105,3 +105,20 @@ public enum ResponseFormat: Sendable, Equatable {
     case json
     case structured(schema: String)
 }
+
+/// Shared token estimation utility used by ConversationSession and CostTracker.
+enum TokenEstimator {
+    /// Approximate ratio of tokens per character (1 token ≈ 4 characters).
+    static let tokensPerCharacter: Double = 0.25
+
+    /// Estimate token count for a string.
+    static func estimateTokens(for text: String) -> Int {
+        max(Int(Double(text.count) * tokensPerCharacter), 1)
+    }
+
+    /// Estimate token count across an array of messages.
+    static func estimateTokens(for messages: [Message]) -> Int {
+        let charCount = messages.reduce(0) { $0 + ($1.content.text?.count ?? 0) }
+        return Int(Double(charCount) * tokensPerCharacter)
+    }
+}

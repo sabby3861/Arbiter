@@ -30,9 +30,9 @@ struct AppleFoundationProviderTests {
         #expect(tasks.contains(.structuredOutput))
     }
 
-    @Test func providerReportsToolCallingSupport() {
+    @Test func providerDoesNotSupportToolCalling() {
         let provider = AppleFoundationProvider()
-        #expect(provider.capabilities.supportsToolCalling)
+        #expect(!provider.capabilities.supportsToolCalling)
     }
 
     @Test func stubProviderReportsUnavailable() async {

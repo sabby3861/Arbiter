@@ -73,7 +73,7 @@ public struct OllamaProvider: AIProvider, Sendable {
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 600
+        configuration.timeoutIntervalForResource = 300
         self.session = URLSession(configuration: configuration)
     }
 
@@ -97,6 +97,8 @@ public struct OllamaProvider: AIProvider, Sendable {
             httpResponse = http
         } catch let error as SwiftAIError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let urlError as URLError {
             logger.error("Ollama request failed: \(urlError.localizedDescription)")
             throw SwiftAIError.providerUnavailable(.ollama, reason: "Server not reachable")

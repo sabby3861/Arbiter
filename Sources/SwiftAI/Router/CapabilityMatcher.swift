@@ -13,6 +13,14 @@ struct CapabilityMatcher: Sendable {
     ) -> ProviderScore {
         var reasoning: [String] = []
         let capScore = scoreCapability(capabilities, request: request, reasoning: &reasoning)
+
+        // Required capability missing — disqualify this provider entirely
+        if capScore == 0 {
+            return ProviderScore(
+                providerID: providerID, baseScore: 0, adjustedScore: 0, reasoning: reasoning
+            )
+        }
+
         let qualityScore = scoreQuality(capabilities)
         let latencyScore = scoreLatency(capabilities)
         let privacyScore = scorePrivacy(capabilities)
@@ -50,14 +58,19 @@ private extension CapabilityMatcher {
                 score += 5
                 reasoning.append("supports tool calling")
             } else {
-                score -= 10
-                reasoning.append("lacks tool calling")
+                reasoning.append("lacks required tool calling")
+                return 0
             }
         }
         if request.messages.contains(where: { $0.content.isImage }) {
-            score += caps.supportsImageInput ? 5 : -10
+            if caps.supportsImageInput {
+                score += 5
+            } else {
+                reasoning.append("lacks required image input")
+                return 0
+            }
         }
-        return max(score, 0)
+        return score
     }
 
     static func scoreQuality(_ caps: ProviderCapabilities) -> Double {

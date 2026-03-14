@@ -69,7 +69,7 @@ struct OllamaMapper: Sendable {
         let finishReason = mapFinishReason(from: json)
 
         return AIResponse(
-            id: UUID().uuidString,
+            id: "ollama-\(UUID().uuidString)",
             content: textContent,
             model: model,
             provider: .ollama,
@@ -175,6 +175,8 @@ private extension OllamaMapper {
             return json
         } catch let swiftAIError as SwiftAIError {
             throw swiftAIError
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             logger.error("Failed to parse Ollama response JSON")
             throw SwiftAIError.decodingFailed(context: "Invalid JSON: \(error.localizedDescription)")

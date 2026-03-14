@@ -52,6 +52,18 @@ public actor SmartRouter {
 private extension SmartRouter {
     func fixedRoute(_ id: ProviderID, providers: [any AIProvider]) -> RoutingDecision {
         let alternatives = providers.filter { $0.id != id }.map(\.id)
+        guard providers.contains(where: { $0.id == id }) else {
+            logger.warning("Fixed route provider \(id.rawValue) not found in registered providers")
+            guard let fallback = alternatives.first else {
+                return .unavailable(factors: [])
+            }
+            return RoutingDecision(
+                selectedProvider: fallback,
+                reason: "Fixed provider \(id.displayName) not registered — fell back to \(fallback.displayName)",
+                alternativeProviders: Array(alternatives.dropFirst()),
+                factors: []
+            )
+        }
         return RoutingDecision(
             selectedProvider: id,
             reason: "Fixed routing to \(id.displayName)",

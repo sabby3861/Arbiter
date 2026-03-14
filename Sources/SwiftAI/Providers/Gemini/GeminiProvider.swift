@@ -90,6 +90,8 @@ public struct GeminiProvider: AIProvider, Sendable {
             httpResponse = http
         } catch let error as SwiftAIError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let urlError as URLError {
             logger.error("Gemini request failed: \(urlError.localizedDescription)")
             throw SwiftAIError.networkError(underlying: urlError)
