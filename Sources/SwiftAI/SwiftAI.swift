@@ -95,9 +95,12 @@ public final class SwiftAI: Sendable {
     public func generate<T: Codable & Sendable>(
         _ prompt: String,
         as type: T.Type,
+        example: T? = nil,
         options: RequestOptions? = nil
     ) async throws -> T {
-        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(for: type, userPrompt: prompt)
+        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(
+            for: type, userPrompt: prompt, example: example
+        )
         var mergedOptions = options ?? RequestOptions()
         mergedOptions.responseFormat = .json
         let response = try await performGenerate(messages: [.user(structuredPrompt)], options: mergedOptions)
@@ -121,6 +124,7 @@ public final class SwiftAI: Sendable {
     public func chat<T: Codable & Sendable>(
         _ messages: [Message],
         as type: T.Type,
+        example: T? = nil,
         options: RequestOptions? = nil
     ) async throws -> T {
         guard let lastUserMessage = messages.last(where: { $0.role == .user }),
@@ -128,7 +132,9 @@ public final class SwiftAI: Sendable {
             throw SwiftAIError.invalidRequest(reason: "No user message found for structured output")
         }
 
-        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(for: type, userPrompt: promptText)
+        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(
+            for: type, userPrompt: promptText, example: example
+        )
         var modifiedMessages = messages.dropLast(where: { $0.id == lastUserMessage.id })
         modifiedMessages.append(.user(structuredPrompt))
 
@@ -161,9 +167,21 @@ public final class SwiftAI: Sendable {
     ) async -> [CostEstimate] {
         let request = buildRequest(messages: [.user(prompt)], options: options)
         let analysis = analyser.analyse(request, providers: providers)
-
         let decision = await routeRequest(request, options: options)
         let selectedProvider = decision.selectedProvider
+
+        let availability = await withTaskGroup(
+            of: (ProviderID, Bool).self
+        ) { group in
+            for provider in providers {
+                group.addTask { (provider.id, await provider.isAvailable) }
+            }
+            var result: [ProviderID: Bool] = [:]
+            for await (id, available) in group {
+                result[id] = available
+            }
+            return result
+        }
 
         return providers.map { provider in
             let inputCost = (provider.capabilities.costPerMillionInputTokens ?? 0)
@@ -176,7 +194,7 @@ public final class SwiftAI: Sendable {
                 estimatedInputTokens: analysis.estimatedInputTokens,
                 estimatedOutputTokens: analysis.estimatedOutputTokens,
                 estimatedCost: inputCost + outputCost,
-                isAvailable: true,
+                isAvailable: availability[provider.id] ?? false,
                 wouldBeSelected: provider.id == selectedProvider
             )
         }
@@ -232,8 +250,8 @@ private extension SwiftAI {
 
         for providerID in providerOrder.prefix(maxAttempts) {
             guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
+            let startTime = CFAbsoluteTimeGetCurrent()
             do {
-                let startTime = CFAbsoluteTimeGetCurrent()
                 let response = try await executeGenerate(request: request, provider: provider, options: options)
                 let latency = CFAbsoluteTimeGetCurrent() - startTime
                 let detectedTask = decision.analysis?.detectedTask ?? .conversation
@@ -248,12 +266,13 @@ private extension SwiftAI {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                let failureLatency = CFAbsoluteTimeGetCurrent() - startTime
                 attempts.append((providerID, error))
                 let detectedTask = decision.analysis?.detectedTask ?? .conversation
                 await router.performanceTracker.recordOutcome(
                     provider: providerID,
                     task: detectedTask,
-                    latencySeconds: 0,
+                    latencySeconds: failureLatency,
                     succeeded: false,
                     tokenCount: 0
                 )
@@ -283,7 +302,7 @@ private extension SwiftAI {
         do {
             let response: AIResponse
             if let timeout = options?.timeout {
-                response = try await withTimeout(timeout) { try await operation() }
+                response = try await withTimeout(timeout, provider: provider.id) { try await operation() }
             } else if let retryConfig, !routingPolicy.fallbackEnabled {
                 let engine = RetryEngine(
                     maxRetries: retryConfig.maxAttempts - 1,
@@ -307,6 +326,7 @@ private extension SwiftAI {
 
     func withTimeout<T: Sendable>(
         _ timeout: Duration,
+        provider: ProviderID,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         try await withThrowingTaskGroup(of: T.self) { group in
@@ -315,10 +335,10 @@ private extension SwiftAI {
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
-                throw SwiftAIError.timeout(.anthropic, duration: timeout)
+                throw SwiftAIError.timeout(provider, duration: timeout)
             }
             guard let result = try await group.next() else {
-                throw SwiftAIError.timeout(.anthropic, duration: timeout)
+                throw SwiftAIError.timeout(provider, duration: timeout)
             }
             group.cancelAll()
             return result
