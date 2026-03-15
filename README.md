@@ -561,6 +561,8 @@ swift package generate-documentation
 - [x] Disk-backed response cache
 - [x] Provider health monitoring
 - [x] Tool calling documentation
+- [x] Response quality validation
+- [x] Token budget planning
 - [ ] v0.2 — MCP client support
 - [ ] v0.2 — Certificate pinning for cloud providers
 - [ ] v0.3 — Conversation persistence

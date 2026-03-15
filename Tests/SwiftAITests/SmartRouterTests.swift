@@ -291,6 +291,40 @@ struct SmartRouterTests {
         #expect(decision.selectedProvider == .anthropic)
     }
 
+    @Test func smartRouteExcludesProviderWhenRequestExceedsContext() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy.smart
+
+        let longText = String(repeating: "word ", count: 50_000)
+        let request = AIRequest.chat(longText)
+
+        let smallContext = MockProvider(
+            id: .ollama,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 4_096,
+                supportsStreaming: true, supportsToolCalling: false, supportsImageInput: false,
+                costPerMillionInputTokens: nil, costPerMillionOutputTokens: nil,
+                estimatedLatency: .fast, privacyLevel: .onDevice
+            )
+        )
+        let largeContext = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 200_000,
+                supportsStreaming: true, supportsToolCalling: true, supportsImageInput: true,
+                costPerMillionInputTokens: 3.0, costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast, privacyLevel: .thirdPartyCloud
+            )
+        )
+
+        let decision = await router.route(
+            request, policy: policy,
+            providers: [smallContext, largeContext],
+            budgetRemaining: nil
+        )
+        #expect(decision.selectedProvider == .anthropic)
+    }
+
     @Test func fixedRouteToNonExistentProviderFallsBack() async {
         let router = makeRouter()
         let policy = RoutingPolicy(strategy: .fixed(.gemini))
