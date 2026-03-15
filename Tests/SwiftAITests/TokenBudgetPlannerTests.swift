@@ -129,7 +129,7 @@ struct TokenBudgetPlannerTests {
         let check = planner.fits(request: request, provider: capabilities)
         if case .exceeds(_, let suggestion) = check {
             switch suggestion {
-            case .reduceMaxTokens, .trimOldMessages, .useProviderWithLargerContext:
+            case .reduceMaxTokens, .trimOldMessages:
                 break
             }
         } else {

@@ -335,28 +335,27 @@ private extension SwiftAI {
                     )
                 case .retryRecommended:
                     logger.debug("Low quality response, retrying once")
+                    let retryReservation = try? await reserveBudget(
+                        for: provider, request: processedRequest
+                    )
                     let retryResponse = try await provider.generate(processedRequest)
-                    if let retryUsage = retryResponse.usage {
-                        let retryCost = estimateCost(usage: retryUsage, provider: provider)
-                        await costTracker.recordUsage(
-                            provider: provider.id, usage: retryUsage, cost: retryCost
-                        )
-                    }
+                    await finalizeCost(
+                        reservation: retryReservation,
+                        usage: retryResponse.usage,
+                        provider: provider
+                    )
                     let processedRetry = try await applyResponseMiddleware(retryResponse)
                     let retryResult = validator.validate(
                         processedRetry, for: processedRequest, analysis: analysis
                     )
-                    if case .empty = retryResult {
+                    switch retryResult {
+                    case .valid, .truncated, .retryRecommended:
+                        return processedRetry
+                    case .empty, .refused:
                         throw SwiftAIError.contentFiltered(
-                            reason: "Response failed validation after retry: \(String(describing: retryResult))"
+                            reason: "Response failed validation after retry: \(retryResult)"
                         )
                     }
-                    if case .refused = retryResult {
-                        throw SwiftAIError.contentFiltered(
-                            reason: "Response failed validation after retry: \(String(describing: retryResult))"
-                        )
-                    }
-                    return processedRetry
                 }
             }
 
