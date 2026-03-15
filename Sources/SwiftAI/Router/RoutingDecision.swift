@@ -10,19 +10,22 @@ public struct RoutingDecision: Sendable, Equatable {
     public let alternativeProviders: [ProviderID]
     public let confidenceScore: Double
     public let factors: [RoutingFactor]
+    public let analysis: RequestAnalysis?
 
     public init(
         selectedProvider: ProviderID?,
         reason: String,
         alternativeProviders: [ProviderID] = [],
         confidenceScore: Double = 1.0,
-        factors: [RoutingFactor] = []
+        factors: [RoutingFactor] = [],
+        analysis: RequestAnalysis? = nil
     ) {
         self.selectedProvider = selectedProvider
         self.reason = reason
         self.alternativeProviders = alternativeProviders
         self.confidenceScore = confidenceScore
         self.factors = factors
+        self.analysis = analysis
     }
 
     /// No providers could handle the request.

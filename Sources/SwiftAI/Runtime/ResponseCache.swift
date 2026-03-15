@@ -6,7 +6,13 @@ import os
 
 private let logger = Logger(subsystem: "com.swiftai", category: "ResponseCache")
 
-/// In-memory cache for AI responses, keyed by prompt content and provider.
+/// Cache persistence strategy
+public enum CachePersistence: Sendable {
+    case memory
+    case disk
+}
+
+/// In-memory (or disk-backed) cache for AI responses, keyed by prompt content and provider.
 ///
 /// Reduces API costs by returning cached responses for identical prompts.
 /// Entries expire after a configurable TTL and the cache enforces a maximum
@@ -22,33 +28,57 @@ public actor ResponseCache {
     private var entries: [CacheKey: CacheEntry] = [:]
     private let maxEntries: Int
     private let ttlSeconds: Double
+    private let persistence: CachePersistence
+    private let cacheDirectory: URL?
 
     /// Create a response cache
     /// - Parameters:
     ///   - maxEntries: Maximum number of cached responses
     ///   - ttl: Time-to-live for each cache entry
-    public init(maxEntries: Int = 1000, ttl: Duration = .seconds(600)) {
+    ///   - persistence: Storage strategy (.memory or .disk)
+    public init(
+        maxEntries: Int = 1000,
+        ttl: Duration = .seconds(600),
+        persistence: CachePersistence = .memory
+    ) {
         self.maxEntries = maxEntries
         self.ttlSeconds = Double(ttl.components.seconds)
             + Double(ttl.components.attoseconds) / 1e18
+        self.persistence = persistence
+
+        if persistence == .disk {
+            let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            let dir = cachesDir?.appendingPathComponent("com.swiftai.cache", isDirectory: true)
+            self.cacheDirectory = dir
+            if let dir {
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+        } else {
+            self.cacheDirectory = nil
+        }
     }
 
     /// Look up a cached response for the given request and provider
     public func get(request: AIRequest, provider: ProviderID) -> AIResponse? {
         let key = CacheKey(request: request, provider: provider)
-        guard let entry = entries[key] else {
-            return nil
+
+        if let entry = entries[key] {
+            let elapsed = Date().timeIntervalSince(entry.storedAt)
+            if elapsed > ttlSeconds {
+                entries.removeValue(forKey: key)
+                logger.debug("Cache miss (expired) for \(provider.rawValue)")
+                return nil
+            }
+            logger.debug("Cache hit for \(provider.rawValue)")
+            return entry.response
         }
 
-        let elapsed = Date().timeIntervalSince(entry.storedAt)
-        if elapsed > ttlSeconds {
-            entries.removeValue(forKey: key)
-            logger.debug("Cache miss (expired) for \(provider.rawValue)")
-            return nil
+        if persistence == .disk, let response = loadFromDisk(key: key) {
+            entries[key] = CacheEntry(response: response, storedAt: Date())
+            return response
         }
 
-        logger.debug("Cache hit for \(provider.rawValue)")
-        return entry.response
+        return nil
     }
 
     /// Store a response in the cache
@@ -57,11 +87,19 @@ public actor ResponseCache {
         let key = CacheKey(request: request, provider: provider)
         entries[key] = CacheEntry(response: response, storedAt: Date())
         logger.debug("Cached response for \(provider.rawValue) (\(self.entries.count)/\(self.maxEntries))")
+
+        if persistence == .disk {
+            saveToDisk(key: key, response: response)
+        }
     }
 
     /// Remove all cached entries
     public func clear() {
         entries.removeAll()
+        if persistence == .disk, let dir = cacheDirectory {
+            try? FileManager.default.removeItem(at: dir)
+            ensureCacheDirectoryExists()
+        }
     }
 
     /// Number of entries currently in the cache
@@ -77,7 +115,67 @@ private extension ResponseCache {
         let evictCount = entries.count - maxEntries + 1
         for entry in sortedKeys.prefix(evictCount) {
             entries.removeValue(forKey: entry.key)
+            if persistence == .disk {
+                deleteFromDisk(key: entry.key)
+            }
         }
+    }
+
+    func ensureCacheDirectoryExists() {
+        guard let dir = cacheDirectory else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    func diskPath(for key: CacheKey) -> URL? {
+        cacheDirectory?.appendingPathComponent("\(key.promptHash)_\(key.provider.rawValue).json")
+    }
+
+    func saveToDisk(key: CacheKey, response: AIResponse) {
+        guard let path = diskPath(for: key) else { return }
+        let diskEntry = DiskCacheEntry(
+            id: response.id,
+            content: response.content,
+            model: response.model,
+            provider: response.provider.rawValue,
+            storedAt: Date()
+        )
+        do {
+            let data = try JSONEncoder().encode(diskEntry)
+            try data.write(to: path, options: .atomic)
+        } catch {
+            logger.debug("Failed to write cache to disk: \(error.localizedDescription)")
+        }
+    }
+
+    func loadFromDisk(key: CacheKey) -> AIResponse? {
+        guard let path = diskPath(for: key),
+              FileManager.default.fileExists(atPath: path.path) else {
+            return nil
+        }
+        do {
+            let data = try Data(contentsOf: path)
+            let entry = try JSONDecoder().decode(DiskCacheEntry.self, from: data)
+            let elapsed = Date().timeIntervalSince(entry.storedAt)
+            if elapsed > ttlSeconds {
+                try? FileManager.default.removeItem(at: path)
+                return nil
+            }
+            guard let providerID = ProviderID(rawValue: entry.provider) else { return nil }
+            return AIResponse(
+                id: entry.id,
+                content: entry.content,
+                model: entry.model,
+                provider: providerID
+            )
+        } catch {
+            logger.debug("Failed to read cache from disk: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func deleteFromDisk(key: CacheKey) {
+        guard let path = diskPath(for: key) else { return }
+        try? FileManager.default.removeItem(at: path)
     }
 }
 
@@ -110,5 +208,13 @@ private struct CacheKey: Hashable, Sendable {
 
 private struct CacheEntry: Sendable {
     let response: AIResponse
+    let storedAt: Date
+}
+
+private struct DiskCacheEntry: Codable, Sendable {
+    let id: String
+    let content: String
+    let model: String
+    let provider: String
     let storedAt: Date
 }
