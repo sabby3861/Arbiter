@@ -170,6 +170,65 @@ struct SwiftAITests {
         let response = try await ai.generate("Hello", options: options)
         #expect(response.content == "Response")
     }
+
+    @Test func validationEnabledRejectsEmptyResponse() async throws {
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(id: .anthropic, responseContent: ""))
+            $0.responseValidation(.enabled)
+        }
+
+        await #expect(throws: SwiftAIError.self) {
+            try await ai.generate("Hello")
+        }
+    }
+
+    @Test func validationDisabledAllowsEmptyResponse() async throws {
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(id: .anthropic, responseContent: ""))
+        }
+
+        let response = try await ai.generate("Hello")
+        #expect(response.content == "")
+    }
+
+    @Test func validationEnabledRejectsRefusedResponse() async throws {
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(
+                id: .anthropic,
+                responseContent: "I cannot help with that request."
+            ))
+            $0.responseValidation(.enabled)
+        }
+
+        await #expect(throws: SwiftAIError.self) {
+            try await ai.generate("Hello")
+        }
+    }
+
+    @Test func validationEnabledAllowsValidResponse() async throws {
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(
+                id: .anthropic,
+                responseContent: "Paris is the capital of France."
+            ))
+            $0.responseValidation(.enabled)
+        }
+
+        let response = try await ai.generate("What is the capital of France?")
+        #expect(response.content == "Paris is the capital of France.")
+    }
+
+    @Test func customValidatorIsUsed() async throws {
+        let alwaysRejectValidator = ResponseValidator()
+        let ai = SwiftAI {
+            $0.cloud(MockProvider(id: .anthropic, responseContent: ""))
+            $0.responseValidation(.custom(alwaysRejectValidator))
+        }
+
+        await #expect(throws: SwiftAIError.self) {
+            try await ai.generate("Hello")
+        }
+    }
 }
 
 @Suite("Concurrency")

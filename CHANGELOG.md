@@ -22,6 +22,8 @@
 - .swiftAILifecycle() view modifier
 - Security documentation and proxy architecture guide
 - RoutingDebugEntry for inspecting routing decisions
+- **Response quality validator**: Detects empty, refused, truncated, and low-quality responses with automatic retry support — enable via `Configuration.responseValidation(.enabled)`
+- **Token budget planner**: Prevents context window overflow by estimating token usage, suggesting fixes, and trimming conversations to fit — integrated into SmartRouter scoring and ConversationSession
 
 ### Fixed
 - Middleware now applied to both generate and streaming request paths

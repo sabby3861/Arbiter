@@ -157,12 +157,24 @@ private extension SmartRouter {
         // Run request analysis for intelligent routing
         let analysis = analyser.analyse(request, providers: available)
 
+        let planner = TokenBudgetPlanner()
         let weights = scoringWeights(for: policy.strategy)
         var scores = available.map { provider in
             CapabilityMatcher.score(
                 providerID: provider.id, capabilities: provider.capabilities,
                 for: request, weights: weights
             )
+        }
+
+        for i in scores.indices {
+            let provider = available.first { $0.id == scores[i].providerID }
+            if let caps = provider?.capabilities {
+                let check = planner.fits(request: request, provider: caps)
+                if case .exceeds = check {
+                    scores[i].adjustedScore = 0
+                    scores[i].reasoning.append("request exceeds context window")
+                }
+            }
         }
 
         applyEnvironmentAdjustments(&scores, device: device, budgetRemaining: budgetRemaining, factors: &factors)

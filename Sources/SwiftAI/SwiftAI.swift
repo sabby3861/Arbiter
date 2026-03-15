@@ -34,6 +34,7 @@ public final class SwiftAI: Sendable {
     private let costTracker: CostTracker
     private let middlewares: [any AIMiddleware]
     private let retryConfig: RetryConfiguration?
+    private let responseValidator: ResponseValidator?
     private let structuredOutputHandler = StructuredOutputHandler()
     private let analyser = RequestAnalyser()
 
@@ -52,6 +53,7 @@ public final class SwiftAI: Sendable {
         self.costTracker = CostTracker()
         self.middlewares = []
         self.retryConfig = nil
+        self.responseValidator = nil
     }
 
     /// Create SwiftAI with full configuration (non-throwing)
@@ -68,6 +70,7 @@ public final class SwiftAI: Sendable {
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
         self.retryConfig = config.retryConfig
+        self.responseValidator = config.resolvedResponseValidator
     }
 
     /// Create SwiftAI with full configuration (throwing, for Keychain-based providers)
@@ -84,6 +87,7 @@ public final class SwiftAI: Sendable {
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
         self.retryConfig = config.retryConfig
+        self.responseValidator = config.resolvedResponseValidator
     }
 
     /// Generate a response from a simple text prompt
@@ -315,7 +319,48 @@ private extension SwiftAI {
             }
 
             await finalizeCost(reservation: reservation, usage: response.usage, provider: provider)
-            return try await applyResponseMiddleware(response)
+            let finalResponse = try await applyResponseMiddleware(response)
+
+            if let validator = responseValidator {
+                let analysis = analyser.analyse(processedRequest, providers: [provider])
+                let result = validator.validate(finalResponse, for: processedRequest, analysis: analysis)
+                switch result {
+                case .valid, .truncated:
+                    break
+                case .empty, .refused:
+                    let description = String(describing: result)
+                    logger.warning("Response validation failed: \(description)")
+                    throw SwiftAIError.contentFiltered(
+                        reason: "Response failed validation: \(description)"
+                    )
+                case .retryRecommended:
+                    logger.debug("Low quality response, retrying once")
+                    let retryResponse = try await provider.generate(processedRequest)
+                    if let retryUsage = retryResponse.usage {
+                        let retryCost = estimateCost(usage: retryUsage, provider: provider)
+                        await costTracker.recordUsage(
+                            provider: provider.id, usage: retryUsage, cost: retryCost
+                        )
+                    }
+                    let processedRetry = try await applyResponseMiddleware(retryResponse)
+                    let retryResult = validator.validate(
+                        processedRetry, for: processedRequest, analysis: analysis
+                    )
+                    if case .empty = retryResult {
+                        throw SwiftAIError.contentFiltered(
+                            reason: "Response failed validation after retry: \(String(describing: retryResult))"
+                        )
+                    }
+                    if case .refused = retryResult {
+                        throw SwiftAIError.contentFiltered(
+                            reason: "Response failed validation after retry: \(String(describing: retryResult))"
+                        )
+                    }
+                    return processedRetry
+                }
+            }
+
+            return finalResponse
         } catch {
             if let reservation {
                 await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
@@ -598,6 +643,15 @@ public struct Configuration: Sendable {
     var middlewares: [any AIMiddleware] = []
     var retryConfig: RetryConfiguration?
     var healthMonitor: ProviderHealthMonitor?
+    var validationPolicy: ResponseValidationPolicy = .disabled
+
+    var resolvedResponseValidator: ResponseValidator? {
+        switch validationPolicy {
+        case .disabled: return nil
+        case .enabled: return ResponseValidator()
+        case .custom(let validator): return validator
+        }
+    }
 
     /// Add a cloud provider (e.g., Anthropic, OpenAI)
     public mutating func cloud(_ provider: any AIProvider) {
@@ -650,6 +704,11 @@ public struct Configuration: Sendable {
             baseDelay: baseDelay,
             maxDelay: maxDelay
         )
+    }
+
+    /// Set the response validation policy
+    public mutating func responseValidation(_ policy: ResponseValidationPolicy) {
+        validationPolicy = policy
     }
 
     /// Enable periodic provider health monitoring

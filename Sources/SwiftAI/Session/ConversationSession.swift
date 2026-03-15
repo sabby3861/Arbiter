@@ -216,13 +216,12 @@ private extension ConversationSession {
     }
 
     func trimToFitTokenWindow() {
-        // Keep at least the most recent message (user's latest input)
-        while messages.count > 1 && estimateTokens(for: messages) > maxTokenEstimate {
-            // Find the oldest non-system message that isn't the last message
-            let removable = messages.dropLast().firstIndex(where: { $0.role != .system })
-            guard let index = removable else { break }
-            messages.remove(at: index)
-        }
+        let planner = TokenBudgetPlanner()
+        messages = planner.trimToFit(
+            messages: messages,
+            maxTokens: maxTokenEstimate,
+            reserveForOutput: 1024
+        )
     }
 
     func mergeOptions(_ options: RequestOptions?) -> RequestOptions {
