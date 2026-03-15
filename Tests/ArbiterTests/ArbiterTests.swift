@@ -238,6 +238,7 @@ struct ArbiterTests {
             responseContent: "Generated response"
         )
         let ai = Arbiter(provider: provider)
+        await ai.smartRouter.performanceTracker.reset()
 
         _ = try await ai.generate("Write something")
 
@@ -256,6 +257,7 @@ struct ArbiterTests {
             shouldError: .networkError(underlying: URLError(.timedOut))
         )
         let ai = Arbiter(provider: provider)
+        await ai.smartRouter.performanceTracker.reset()
 
         do {
             _ = try await ai.generate("Hello")
