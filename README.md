@@ -74,9 +74,15 @@ struct Recipe: Codable {
     let ingredients: [String]
 }
 
+// Simple — works for most types
 let recipe: Recipe = try await ai.generate("Pasta recipe", as: Recipe.self)
-// recipe.name → "Classic Pasta"
-// recipe.ingredients → ["flour", "eggs", "salt", "water"]
+
+// With example — most reliable for complex types
+let recipe: Recipe = try await ai.generate(
+    "Pasta recipe",
+    as: Recipe.self,
+    example: Recipe(name: "", ingredients: [])
+)
 ```
 
 Works with conversations too:
@@ -85,6 +91,7 @@ Works with conversations too:
 let analysis: SentimentResult = try await session.send(
     "Analyse this review: 'Great product!'",
     as: SentimentResult.self,
+    example: SentimentResult(sentiment: "", score: 0),
     using: ai
 )
 ```

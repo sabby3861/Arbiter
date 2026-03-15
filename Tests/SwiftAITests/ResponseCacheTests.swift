@@ -95,4 +95,93 @@ struct ResponseCacheTests {
 
         #expect(cached == nil)
     }
+
+    @Test("Disk cache stores and retrieves")
+    func diskCacheRoundtrip() async {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftai-test-\(UUID().uuidString)")
+        let cache = ResponseCache(
+            maxEntries: 100,
+            ttl: .seconds(60),
+            persistence: .disk(directory: tempDir)
+        )
+        let request = AIRequest.chat("Hello")
+        let response = makeResponse(content: "disk cached")
+
+        await cache.set(request: request, provider: .anthropic, response: response)
+        let cached = await cache.get(request: request, provider: .anthropic)
+        #expect(cached?.content == "disk cached")
+
+        await cache.clear()
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    @Test("Disk cache persists across instances")
+    func diskCachePersistence() async {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftai-test-\(UUID().uuidString)")
+
+        let cache1 = ResponseCache(
+            maxEntries: 100,
+            ttl: .seconds(60),
+            persistence: .disk(directory: tempDir)
+        )
+        let request = AIRequest.chat("Persist test")
+        await cache1.set(
+            request: request,
+            provider: .anthropic,
+            response: makeResponse(content: "persisted")
+        )
+
+        let cache2 = ResponseCache(
+            maxEntries: 100,
+            ttl: .seconds(60),
+            persistence: .disk(directory: tempDir)
+        )
+        let cached = await cache2.get(request: request, provider: .anthropic)
+        #expect(cached?.content == "persisted")
+
+        await cache1.clear()
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    @Test("Disk cache clear removes files")
+    func diskCacheClear() async {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftai-test-\(UUID().uuidString)")
+        let cache = ResponseCache(
+            maxEntries: 100,
+            ttl: .seconds(60),
+            persistence: .disk(directory: tempDir)
+        )
+        let request = AIRequest.chat("Clear test")
+        await cache.set(
+            request: request,
+            provider: .anthropic,
+            response: makeResponse()
+        )
+        await cache.clear()
+
+        let cached = await cache.get(request: request, provider: .anthropic)
+        #expect(cached == nil)
+
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    @Test("Memory-only mode still works after disk addition")
+    func memoryModeUnchanged() async {
+        let cache = ResponseCache(
+            maxEntries: 100,
+            ttl: .seconds(60),
+            persistence: .memory
+        )
+        let request = AIRequest.chat("Memory test")
+        await cache.set(
+            request: request,
+            provider: .anthropic,
+            response: makeResponse(content: "in memory")
+        )
+        let cached = await cache.get(request: request, provider: .anthropic)
+        #expect(cached?.content == "in memory")
+    }
 }

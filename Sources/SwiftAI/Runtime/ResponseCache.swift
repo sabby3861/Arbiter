@@ -9,7 +9,12 @@ private let logger = Logger(subsystem: "com.swiftai", category: "ResponseCache")
 /// Cache persistence strategy
 public enum CachePersistence: Sendable {
     case memory
-    case disk
+    case disk(directory: URL? = nil)
+
+    var isDisk: Bool {
+        if case .disk = self { return true }
+        return false
+    }
 }
 
 /// In-memory (or disk-backed) cache for AI responses, keyed by prompt content and provider.
@@ -46,9 +51,10 @@ public actor ResponseCache {
             + Double(ttl.components.attoseconds) / 1e18
         self.persistence = persistence
 
-        if persistence == .disk {
-            let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            let dir = cachesDir?.appendingPathComponent("com.swiftai.cache", isDirectory: true)
+        if case .disk(let customDirectory) = persistence {
+            let dir = customDirectory ?? FileManager.default
+                .urls(for: .cachesDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("com.swiftai.cache", isDirectory: true)
             self.cacheDirectory = dir
             if let dir {
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -73,7 +79,7 @@ public actor ResponseCache {
             return entry.response
         }
 
-        if persistence == .disk, let response = loadFromDisk(key: key) {
+        if persistence.isDisk, let response = loadFromDisk(key: key) {
             entries[key] = CacheEntry(response: response, storedAt: Date())
             return response
         }
@@ -88,7 +94,7 @@ public actor ResponseCache {
         entries[key] = CacheEntry(response: response, storedAt: Date())
         logger.debug("Cached response for \(provider.rawValue) (\(self.entries.count)/\(self.maxEntries))")
 
-        if persistence == .disk {
+        if persistence.isDisk {
             saveToDisk(key: key, response: response)
         }
     }
@@ -96,7 +102,7 @@ public actor ResponseCache {
     /// Remove all cached entries
     public func clear() {
         entries.removeAll()
-        if persistence == .disk, let dir = cacheDirectory {
+        if persistence.isDisk, let dir = cacheDirectory {
             try? FileManager.default.removeItem(at: dir)
             ensureCacheDirectoryExists()
         }
@@ -115,7 +121,7 @@ private extension ResponseCache {
         let evictCount = entries.count - maxEntries + 1
         for entry in sortedKeys.prefix(evictCount) {
             entries.removeValue(forKey: entry.key)
-            if persistence == .disk {
+            if persistence.isDisk {
                 deleteFromDisk(key: entry.key)
             }
         }
@@ -127,7 +133,8 @@ private extension ResponseCache {
     }
 
     func diskPath(for key: CacheKey) -> URL? {
-        cacheDirectory?.appendingPathComponent("\(key.promptHash)_\(key.provider.rawValue).json")
+        let hashString = String(key.promptHash, radix: 16, uppercase: false)
+        return cacheDirectory?.appendingPathComponent("\(hashString)_\(key.provider.rawValue).json")
     }
 
     func saveToDisk(key: CacheKey, response: AIResponse) {
