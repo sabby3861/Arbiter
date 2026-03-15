@@ -229,6 +229,44 @@ struct SwiftAITests {
             try await ai.generate("Hello")
         }
     }
+
+    // MARK: - Integration: Performance tracking
+
+    @Test func generateRecordsPerformanceMetrics() async throws {
+        let provider = MockProvider(
+            id: .anthropic,
+            responseContent: "Generated response"
+        )
+        let ai = SwiftAI(provider: provider)
+
+        _ = try await ai.generate("Write something")
+
+        // Verify performance was recorded by checking the router's tracker
+        let summary = await ai.smartRouter.performanceTracker.summary(
+            for: .anthropic
+        )
+        #expect(summary.requestCount == 1)
+        #expect(summary.successRate == 1.0)
+        #expect(summary.averageLatencySeconds > 0)
+    }
+
+    @Test func failedGenerateRecordsFailureMetrics() async throws {
+        let provider = MockProvider(
+            id: .anthropic,
+            shouldError: .networkError(underlying: URLError(.timedOut))
+        )
+        let ai = SwiftAI(provider: provider)
+
+        do {
+            _ = try await ai.generate("Hello")
+        } catch {}
+
+        let summary = await ai.smartRouter.performanceTracker.summary(
+            for: .anthropic
+        )
+        #expect(summary.requestCount == 1)
+        #expect(summary.successRate == 0.0)
+    }
 }
 
 @Suite("Concurrency")
