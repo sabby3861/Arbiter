@@ -151,5 +151,4 @@ public enum BudgetCheck: Sendable, Equatable {
 public enum BudgetSuggestion: Sendable, Equatable {
     case trimOldMessages(keepLast: Int)
     case reduceMaxTokens(to: Int)
-    case useProviderWithLargerContext(ProviderID)
 }
