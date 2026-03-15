@@ -1,6 +1,6 @@
-# SwiftAI Routing Guide
+# Arbiter Routing Guide
 
-SwiftAI's smart router automatically picks the best provider for each request. This guide explains how routing decisions are made and how to control them.
+Arbiter's smart router automatically picks the best provider for each request. This guide explains how routing decisions are made and how to control them.
 
 ## Scoring System
 
@@ -23,7 +23,7 @@ Control how the router weights these factors:
 ### Balanced (Default)
 
 ```swift
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
     $0.local(OllamaProvider())
     $0.routing(.smart)  // This is the default
@@ -105,7 +105,7 @@ Request arrives
 Fallback is enabled by default. You can configure it:
 
 ```swift
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
     try $0.cloud(.openAI(from: .keychain))
     $0.local(OllamaProvider())
@@ -120,7 +120,7 @@ To disable fallback, use `.fixed(.anthropic)` — only the specified provider is
 Set a budget to control cloud costs. When spending approaches the limit, cloud provider scores drop to zero and requests route to free local providers automatically.
 
 ```swift
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
     $0.local(OllamaProvider())
     $0.local(MLXProvider(.auto))
@@ -136,9 +136,9 @@ The `.fallbackToCheaper` action means: when the budget runs low, cloud scores dr
 A production-ready setup with smart routing, spending limits, and privacy controls:
 
 ```swift
-import SwiftAI
+import Arbiter
 
-let ai = try SwiftAI {
+let ai = try Arbiter {
     // Cloud providers — best quality, paid
     try $0.cloud(.anthropic(from: .keychain))
     try $0.cloud(.openAI(from: .keychain))
@@ -171,4 +171,4 @@ let privateResponse = try await ai.generate(
 )
 ```
 
-With this setup, SwiftAI handles provider selection, fallback, cost control, and privacy enforcement automatically. You write one `ai.generate()` call and the router does the rest.
+With this setup, Arbiter handles provider selection, fallback, cost control, and privacy enforcement automatically. You write one `ai.generate()` call and the router does the rest.

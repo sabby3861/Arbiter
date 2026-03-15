@@ -1,6 +1,6 @@
 ---
 name: Feature Request
-about: Suggest a feature for SwiftAI
+about: Suggest a feature for Arbiter
 title: '[Feature] '
 labels: enhancement
 ---

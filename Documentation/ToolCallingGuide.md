@@ -1,13 +1,13 @@
 # Tool Calling Guide
 
-SwiftAI supports tool calling (function calling) across cloud providers, letting the AI invoke your Swift functions.
+Arbiter supports tool calling (function calling) across cloud providers, letting the AI invoke your Swift functions.
 
 ## Quick Start
 
 ```swift
-import SwiftAI
+import Arbiter
 
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
 }
 

@@ -1,17 +1,17 @@
-# SwiftAI
+# Arbiter
 
-[![CI](https://github.com/sabby3861/SwiftAI/actions/workflows/ci.yml/badge.svg)](https://github.com/sabby3861/SwiftAI/actions/workflows/ci.yml)
+[![CI](https://github.com/sabby3861/Arbiter/actions/workflows/ci.yml/badge.svg)](https://github.com/sabby3861/Arbiter/actions/workflows/ci.yml)
 
 **One API for every AI — cloud, on-device, and Apple Intelligence.**
 
-SwiftAI is a unified AI runtime for Swift that lets you call any AI provider through a single, consistent interface. Write your AI code once, then swap providers — or run them all simultaneously with intelligent routing.
+Arbiter is a unified AI runtime for Swift that lets you call any AI provider through a single, consistent interface. Write your AI code once, then swap providers — or run them all simultaneously with intelligent routing.
 
 ## Quick Start
 
 ```swift
-import SwiftAI
+import Arbiter
 
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
 }
 
@@ -19,13 +19,13 @@ let ai = try SwiftAI {
 let response = try await ai.generate("Explain quantum computing")
 
 // Or drop in a full chat UI
-SwiftAIChatView(ai: ai)
+ArbiterChatView(ai: ai)
 ```
 
 ## Multi-Provider Setup
 
 ```swift
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
     try $0.cloud(.openAI(from: .keychain))
     try $0.cloud(.gemini(from: .keychain))
@@ -37,7 +37,7 @@ let ai = try SwiftAI {
     $0.privacy(.strict)
 }
 
-// SwiftAI picks the best available provider
+// Arbiter picks the best available provider
 let response = try await ai.generate("Hello!")
 
 // Tag sensitive requests — forces on-device routing
@@ -98,10 +98,10 @@ let analysis: SentimentResult = try await session.send(
 
 ## Intelligent Routing
 
-SwiftAI's router doesn't just match capabilities — it analyses the actual request to determine complexity, intent, and optimal routing. No other library does this.
+Arbiter's router doesn't just match capabilities — it analyses the actual request to determine complexity, intent, and optimal routing. No other library does this.
 
 ```swift
-// SwiftAI analyses your request and routes intelligently:
+// Arbiter analyses your request and routes intelligently:
 
 // Simple classification → Apple FM (free, fast, sufficient)
 let sentiment = try await ai.generate("Is this positive? 'Great product!'")
@@ -222,7 +222,7 @@ let response = try await ai.generate("Analyze my blood pressure trends", options
 The `PrivacyGuard` can also detect PII automatically:
 
 ```swift
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.privacy(.strict)  // Enables PII detection (email, phone, SSN, credit card)
 }
 // Requests containing PII are automatically routed on-device
@@ -233,7 +233,7 @@ let ai = SwiftAI {
 When the top-scored provider fails, the router automatically tries alternatives:
 
 ```swift
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.cloud(anthropicProvider)
     $0.cloud(openAIProvider)
     $0.local(OllamaProvider())
@@ -246,10 +246,10 @@ let ai = SwiftAI {
 
 ### Cost Tracking
 
-SwiftAI tracks spend per provider and enforces budgets:
+Arbiter tracks spend per provider and enforces budgets:
 
 ```swift
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.spendingLimit(5.00, action: .fallbackToCheaper)
 }
 // When budget runs low, automatically switches to cheaper/free providers
@@ -269,7 +269,7 @@ let response = try await ai.generate("Write a long essay", options: options)
 Configure automatic retries for single-provider setups:
 
 ```swift
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.cloud(anthropicProvider)
     $0.retry(maxAttempts: 3, baseDelay: .milliseconds(500), maxDelay: .seconds(30))
 }
@@ -280,7 +280,7 @@ let ai = SwiftAI {
 Enable periodic availability checks to avoid routing to unhealthy providers:
 
 ```swift
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.cloud(anthropicProvider)
     $0.local(OllamaProvider())
     $0.healthCheck(.enabled(interval: .minutes(5)))
@@ -340,20 +340,20 @@ Text("AI Feature")
 
 ## SwiftUI Components
 
-Drop-in UI components that work with any SwiftAI configuration.
+Drop-in UI components that work with any Arbiter configuration.
 
 ### Chat Interface
 
 ```swift
-import SwiftAI
+import Arbiter
 
 struct ContentView: View {
-    let ai: SwiftAI
+    let ai: Arbiter
 
     var body: some View {
-        SwiftAIChatView(ai: ai)
+        ArbiterChatView(ai: ai)
         // Or with a system prompt:
-        // SwiftAIChatView(ai: ai, systemPrompt: "You are a helpful assistant.")
+        // ArbiterChatView(ai: ai, systemPrompt: "You are a helpful assistant.")
     }
 }
 ```
@@ -400,7 +400,7 @@ Automatically unloads on-device models when the system reports memory pressure, 
 Process requests and responses through a configurable pipeline:
 
 ```swift
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.cloud(anthropicProvider)
     $0.middleware(LoggingMiddleware(logLevel: .standard))
     $0.middleware(RequestSanitiserMiddleware(requestsPerMinute: 30))
@@ -444,7 +444,7 @@ let analytics = UsageAnalytics()
 let snapshot = await analytics.snapshot() // UsageSnapshot is @Observable
 ```
 
-## Why SwiftAI?
+## Why Arbiter?
 
 ### The Three-Tier Problem
 
@@ -454,15 +454,15 @@ Modern apps need AI from three different places:
 2. **Local servers** (Ollama) — good for development and privacy, but need setup
 3. **On-device models** (MLX, Apple Foundation Models) — instant, private, free, but less capable
 
-Each has a different SDK, different data types, different error handling. SwiftAI unifies all three behind a single protocol, so your app code stays clean regardless of which tier you're using.
+Each has a different SDK, different data types, different error handling. Arbiter unifies all three behind a single protocol, so your app code stays clean regardless of which tier you're using.
 
 ## Installation
 
-Add SwiftAI to your project via Swift Package Manager:
+Add Arbiter to your project via Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/sabby3861/SwiftAI.git", from: "0.1.0")
+    .package(url: "https://github.com/sabby3861/Arbiter.git", from: "0.1.0")
 ]
 ```
 
@@ -478,7 +478,7 @@ MLX support is included as an optional dependency — it compiles only on macOS 
 
 ## Security
 
-SwiftAI is designed with security defaults, not security afterthoughts.
+Arbiter is designed with security defaults, not security afterthoughts.
 
 **API key protection**: Keys are stored in the iOS Keychain by default.
 Hardcoded key strings trigger a deprecation warning at compile time.
@@ -487,7 +487,7 @@ Hardcoded key strings trigger a deprecation warning at compile time.
 to ensure they never leave the device. The smart router enforces this.
 
 **Spending limits**: Set monthly and per-request budget caps. When limits
-are reached, SwiftAI falls back to free on-device providers automatically.
+are reached, Arbiter falls back to free on-device providers automatically.
 
 **PII detection**: Optional prompt scanning catches email addresses, phone
 numbers, and other patterns before they reach cloud APIs.

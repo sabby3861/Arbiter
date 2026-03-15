@@ -1,11 +1,11 @@
-# Contributing to SwiftAI
+# Contributing to Arbiter
 
-Thanks for your interest in contributing to SwiftAI! Here's how to get started.
+Thanks for your interest in contributing to Arbiter! Here's how to get started.
 
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/SwiftAI.git`
+2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/Arbiter.git`
 3. Create a branch: `git checkout -b feature/your-feature`
 4. Make your changes
 5. Run tests: `swift test`
@@ -30,11 +30,11 @@ Thanks for your interest in contributing to SwiftAI! Here's how to get started.
 
 ## Adding a New Provider
 
-1. Create a new directory under `Sources/SwiftAI/Providers/YourProvider/`
+1. Create a new directory under `Sources/Arbiter/Providers/YourProvider/`
 2. Implement the `AIProvider` protocol
 3. Add a model enum listing available models
-4. Add a mapper for converting between SwiftAI types and provider-specific JSON
-5. Add comprehensive tests under `Tests/SwiftAITests/`
+4. Add a mapper for converting between Arbiter types and provider-specific JSON
+5. Add comprehensive tests under `Tests/ArbiterTests/`
 6. Update the README with the new provider
 
 ## Pull Request Guidelines

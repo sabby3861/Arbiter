@@ -1,11 +1,11 @@
-// SwiftAI — Unified AI Runtime for Swift
+// Arbiter — Unified AI Runtime for Swift
 // Copyright (c) 2026 Sanjay Kumar. MIT License.
 
 import SwiftUI
-import SwiftAI
+import Arbiter
 import os
 
-private let logger = Logger(subsystem: "com.swiftai.examples", category: "OnDeviceOnly")
+private let logger = Logger(subsystem: "com.arbiter.examples", category: "OnDeviceOnly")
 
 @main
 struct OnDeviceApp: App {
@@ -49,10 +49,10 @@ struct OnDeviceRootView: View {
         }
     }
 
-    private func readyView(ai: SwiftAI) -> some View {
+    private func readyView(ai: Arbiter) -> some View {
         VStack(spacing: 0) {
             privacyBanner
-            SwiftAIChatView(ai: ai, systemPrompt: "You are a helpful on-device assistant.")
+            ArbiterChatView(ai: ai, systemPrompt: "You are a helpful on-device assistant.")
                 .swiftAILifecycle(ai)
         }
     }
@@ -83,7 +83,7 @@ struct OnDeviceRootView: View {
     private func prepareRuntime() async {
         #if canImport(MLX)
         logger.info("MLX available, configuring on-device provider")
-        let ai = SwiftAI { config in
+        let ai = Arbiter { config in
             config.local(MLXProvider(.auto))
             config.privacy(.localOnly)
             config.routing(.preferLocal)
@@ -109,6 +109,6 @@ struct OnDeviceRootView: View {
 
 private enum LoadState {
     case loading
-    case ready(SwiftAI)
+    case ready(Arbiter)
     case unsupported(String)
 }
