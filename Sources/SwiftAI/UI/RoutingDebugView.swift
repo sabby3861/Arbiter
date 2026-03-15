@@ -90,6 +90,10 @@ private struct RoutingEntryRow: View {
                 value: String(format: "%.0f%%", entry.decision.confidenceScore * 100)
             )
 
+            if let analysis = entry.decision.analysis {
+                analysisSection(analysis)
+            }
+
             if !entry.decision.alternativeProviders.isEmpty {
                 DetailRow(
                     label: "Fallbacks",
@@ -111,6 +115,20 @@ private struct RoutingEntryRow: View {
             }
         }
         .padding(.leading, 22)
+    }
+
+    @ViewBuilder
+    private func analysisSection(_ analysis: RequestAnalysis) -> some View {
+        DetailRow(label: "Complexity", value: "\(analysis.complexity)")
+        DetailRow(label: "Task", value: analysis.detectedTask.rawValue)
+
+        if !analysis.costEstimates.isEmpty {
+            let costText = analysis.costEstimates
+                .sorted { $0.key.rawValue < $1.key.rawValue }
+                .map { "\($0.key.displayName): $\(String(format: "%.4f", $0.value))" }
+                .joined(separator: " | ")
+            DetailRow(label: "Est. cost", value: costText)
+        }
     }
 
     private var tierIndicator: some View {

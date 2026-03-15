@@ -16,15 +16,20 @@ public actor SmartRouter {
     private let privacyGuard: PrivacyGuard?
     private var _recentDecisions: [RoutingDebugEntry] = []
     private let maxHistorySize = 100
+    private let analyser = RequestAnalyser()
+    let performanceTracker = ProviderPerformanceTracker()
+    private let healthMonitor: ProviderHealthMonitor?
 
     public init(
         privacyGuard: PrivacyGuard? = nil,
         connectivityCheck: (@Sendable () async -> ConnectivityState)? = nil,
-        deviceAssessment: (@Sendable () -> DeviceCapabilities)? = nil
+        deviceAssessment: (@Sendable () -> DeviceCapabilities)? = nil,
+        healthMonitor: ProviderHealthMonitor? = nil
     ) {
         self.privacyGuard = privacyGuard
         self.connectivityCheck = connectivityCheck ?? ConnectivityMonitor.checkConnectivity
         self.deviceAssessment = deviceAssessment ?? DeviceAssessor.assess
+        self.healthMonitor = healthMonitor
     }
 
     /// Route a request to the best available provider.
@@ -149,6 +154,9 @@ private extension SmartRouter {
             return .unavailable(factors: factors)
         }
 
+        // Run request analysis for intelligent routing
+        let analysis = analyser.analyse(request, providers: available)
+
         let weights = scoringWeights(for: policy.strategy)
         var scores = available.map { provider in
             CapabilityMatcher.score(
@@ -158,9 +166,16 @@ private extension SmartRouter {
         }
 
         applyEnvironmentAdjustments(&scores, device: device, budgetRemaining: budgetRemaining, factors: &factors)
+
+        if case .smart = policy.strategy, !device.isThermallyConstrained {
+            applyComplexityAdjustments(&scores, analysis: analysis)
+            applyTaskAdjustments(&scores, analysis: analysis, providers: available)
+        }
+        await applyPerformanceAdjustments(&scores, analysis: analysis)
+        await applyHealthAdjustments(&scores)
         scores.sort { $0.adjustedScore > $1.adjustedScore }
 
-        return buildDecision(from: scores, factors: factors)
+        return buildDecision(from: scores, factors: factors, analysis: analysis)
     }
 
     func filterByConstraints(
@@ -221,6 +236,76 @@ private extension SmartRouter {
         }
     }
 
+    func applyComplexityAdjustments(_ scores: inout [ProviderScore], analysis: RequestAnalysis) {
+        let boost: Double = 15
+        for i in scores.indices {
+            let tier = scores[i].providerID.tier
+            switch analysis.complexity {
+            case .trivial, .simple:
+                if tier == .onDevice || tier == .system {
+                    scores[i].adjustedScore += boost
+                    scores[i].reasoning.append("simple task — boosted on-device")
+                }
+            case .moderate:
+                break
+            case .complex, .expert:
+                if tier == .cloud {
+                    scores[i].adjustedScore += boost
+                    scores[i].reasoning.append("complex task — boosted cloud")
+                }
+            }
+        }
+    }
+
+    func applyTaskAdjustments(
+        _ scores: inout [ProviderScore],
+        analysis: RequestAnalysis,
+        providers: [any AIProvider]
+    ) {
+        for i in scores.indices {
+            let providerID = scores[i].providerID
+
+            if analysis.detectedTask == .codeGeneration && providerID == .anthropic {
+                scores[i].adjustedScore += 10
+                scores[i].reasoning.append("code task — Anthropic boost")
+            }
+
+            if analysis.detectedTask == .structuredOutput {
+                if let provider = providers.first(where: { $0.id == providerID }),
+                   provider.capabilities.supportedTasks.contains(.structuredOutput) {
+                    scores[i].adjustedScore += 10
+                    scores[i].reasoning.append("structured output — JSON mode boost")
+                }
+            }
+        }
+    }
+
+    func applyPerformanceAdjustments(
+        _ scores: inout [ProviderScore],
+        analysis: RequestAnalysis
+    ) async {
+        for i in scores.indices {
+            let adjustment = await performanceTracker.scoreAdjustment(
+                for: scores[i].providerID,
+                task: analysis.detectedTask
+            )
+            if adjustment != 0 {
+                scores[i].adjustedScore += adjustment
+                scores[i].reasoning.append("performance history: \(adjustment > 0 ? "+" : "")\(Int(adjustment))")
+            }
+        }
+    }
+
+    func applyHealthAdjustments(_ scores: inout [ProviderScore]) async {
+        guard let monitor = healthMonitor else { return }
+        for i in scores.indices {
+            let adjustment = await monitor.scoreAdjustment(for: scores[i].providerID)
+            if adjustment != 0 {
+                scores[i].adjustedScore += adjustment
+            }
+        }
+    }
+
     func applyEnvironmentAdjustments(
         _ scores: inout [ProviderScore],
         device: DeviceCapabilities,
@@ -248,7 +333,11 @@ private extension SmartRouter {
         }
     }
 
-    func buildDecision(from scores: [ProviderScore], factors: [RoutingFactor]) -> RoutingDecision {
+    func buildDecision(
+        from scores: [ProviderScore],
+        factors: [RoutingFactor],
+        analysis: RequestAnalysis? = nil
+    ) -> RoutingDecision {
         guard let best = scores.first, best.adjustedScore > 0 else {
             return .unavailable(factors: factors)
         }
@@ -266,7 +355,8 @@ private extension SmartRouter {
             reason: reason,
             alternativeProviders: alternatives,
             confidenceScore: min(best.adjustedScore / 20.0, 1.0),
-            factors: factors
+            factors: factors,
+            analysis: analysis
         )
     }
 
