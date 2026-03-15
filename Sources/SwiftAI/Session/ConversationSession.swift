@@ -159,6 +159,7 @@ public final class ConversationSession: Identifiable {
     public func send<T: Codable & Sendable>(
         _ text: String,
         as type: T.Type,
+        example: T? = nil,
         using ai: SwiftAI,
         options: RequestOptions? = nil
     ) async throws -> T {
@@ -175,7 +176,7 @@ public final class ConversationSession: Identifiable {
             try Task.checkCancellation()
 
             let handler = StructuredOutputHandler()
-            let structuredPrompt = handler.buildJSONPrompt(for: type, userPrompt: text)
+            let structuredPrompt = handler.buildJSONPrompt(for: type, userPrompt: text, example: example)
 
             var mergedOptions = mergeOptions(options)
             mergedOptions.responseFormat = .json

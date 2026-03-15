@@ -120,4 +120,40 @@ struct StructuredOutputTests {
             Issue.record("Expected SwiftAIError, got \(error)")
         }
     }
+
+    @Test("buildJSONPrompt with example includes actual JSON structure")
+    func promptWithExampleIncludesSchema() {
+        let example = TestRecipe(name: "Example", ingredients: ["flour"])
+        let prompt = handler.buildJSONPrompt(
+            for: TestRecipe.self,
+            userPrompt: "Make a recipe",
+            example: example
+        )
+        #expect(prompt.contains("\"name\""))
+        #expect(prompt.contains("\"ingredients\""))
+        #expect(prompt.contains("flour"))
+    }
+
+    @Test("buildJSONPrompt without example still produces valid prompt")
+    func promptWithoutExampleWorks() {
+        let prompt = handler.buildJSONPrompt(
+            for: TestRecipe.self,
+            userPrompt: "Make a recipe"
+        )
+        #expect(prompt.contains("TestRecipe"))
+        #expect(prompt.contains("JSON"))
+    }
+
+    @Test("generate<T> with example produces correct result")
+    func generateWithExample() async throws {
+        let json = #"{"name": "Soup", "ingredients": ["water"]}"#
+        let provider = MockProvider(responseContent: json)
+        let ai = SwiftAI(provider: provider)
+        let recipe: TestRecipe = try await ai.generate(
+            "Make soup",
+            as: TestRecipe.self,
+            example: TestRecipe(name: "", ingredients: [])
+        )
+        #expect(recipe.name == "Soup")
+    }
 }

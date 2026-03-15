@@ -25,8 +25,7 @@ public actor ProviderHealthMonitor {
         monitorTask = Task { [self] in
             while !Task.isCancelled {
                 await self.refreshAll()
-                let intervalNanos = UInt64(interval.components.seconds) * 1_000_000_000
-                try? await Task.sleep(nanoseconds: intervalNanos)
+                try? await Task.sleep(for: interval)
             }
         }
     }

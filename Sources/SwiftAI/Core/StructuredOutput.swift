@@ -8,16 +8,43 @@ private let logger = Logger(subsystem: "com.swiftai", category: "StructuredOutpu
 
 struct StructuredOutputHandler: Sendable {
     private let decoder = JSONDecoder()
+    private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }()
 
-    func buildJSONPrompt<T: Codable>(for type: T.Type, userPrompt: String) -> String {
-        let schemaDescription = describeType(type)
+    func buildJSONPrompt<T: Codable>(
+        for type: T.Type,
+        userPrompt: String,
+        example: T? = nil
+    ) -> String {
+        let schemaBlock: String
+        if let example,
+           let data = try? encoder.encode(example),
+           let json = String(data: data, encoding: .utf8) {
+            schemaBlock = """
+            Respond with ONLY a valid JSON object matching this exact structure:
+            \(json)
+            Replace the example values with real values based on the prompt.
+            """
+        } else {
+            schemaBlock = """
+            Respond with ONLY a valid JSON object. \
+            The JSON must represent a \(String(describing: type)) \
+            with all its properties as keys. \
+            Use appropriate JSON types: strings as "text", \
+            numbers as 0, booleans as true/false, \
+            arrays as [...], nested objects as {...}. \
+            Do not include any explanation or markdown.
+            """
+        }
+
         return """
         \(userPrompt)
 
-        Respond ONLY with valid JSON matching this structure:
-        \(schemaDescription)
-
-        Do not include any explanation, markdown fences, or text outside the JSON object.
+        \(schemaBlock)
+        Do not include markdown fences, explanation, or any text outside the JSON object.
         """
     }
 
@@ -68,10 +95,5 @@ private extension StructuredOutputHandler {
         }
 
         return String(cleaned[firstBrace...lastBrace])
-    }
-
-    func describeType<T: Codable>(_ type: T.Type) -> String {
-        let typeName = String(describing: type)
-        return "{\(typeName) properties as JSON keys with appropriate value types}"
     }
 }
