@@ -1,26 +1,26 @@
-# SwiftAI Getting Started
+# Arbiter Getting Started
 
 Go from an empty Xcode project to a working AI chat in under 10 minutes.
 
-## 1. Add SwiftAI via Swift Package Manager
+## 1. Add Arbiter via Swift Package Manager
 
 In Xcode: **File > Add Package Dependencies**, then paste:
 
 ```
-https://github.com/sabby3861/SwiftAI.git
+https://github.com/sabby3861/Arbiter.git
 ```
 
 Set the version to **0.1.0** (or "Up to Next Major").
 
-## 2. Import SwiftAI
+## 2. Import Arbiter
 
 ```swift
-import SwiftAI
+import Arbiter
 ```
 
 ## 3. Store Your API Key
 
-SwiftAI keeps keys in the Keychain. Store your key once (e.g., during onboarding or from a server-provided token):
+Arbiter keeps keys in the Keychain. Store your key once (e.g., during onboarding or from a server-provided token):
 
 ```swift
 try SecureKeyStorage.store(key: "your-key", for: .anthropic)
@@ -45,10 +45,10 @@ let provider = try OpenAIProvider(keyStorage: .openAI)
 let provider = OllamaProvider()
 ```
 
-## 5. Create a SwiftAI Instance
+## 5. Create a Arbiter Instance
 
 ```swift
-let ai = try SwiftAI {
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
 }
 ```
@@ -57,26 +57,26 @@ That single call sets up the provider, loads your Keychain key, and configures t
 
 ## 6. Option A: Drop-In Chat UI
 
-For a complete chat interface with zero effort, use `SwiftAIChatView`:
+For a complete chat interface with zero effort, use `ArbiterChatView`:
 
 ```swift
 import SwiftUI
-import SwiftAI
+import Arbiter
 
 @main
 struct MyApp: App {
-    let ai: SwiftAI
+    let ai: Arbiter
 
     init() {
         // In a real app, handle the error appropriately
-        self.ai = (try? SwiftAI {
+        self.ai = (try? Arbiter {
             try $0.cloud(.anthropic(from: .keychain))
-        }) ?? SwiftAI(provider: OllamaProvider())
+        }) ?? Arbiter(provider: OllamaProvider())
     }
 
     var body: some Scene {
         WindowGroup {
-            SwiftAIChatView(ai: ai)
+            ArbiterChatView(ai: ai)
         }
     }
 }
@@ -116,7 +116,7 @@ let response = try await ai.chat(messages)
 
 ```swift
 import SwiftUI
-import SwiftAI
+import Arbiter
 
 @main
 struct MyApp: App {
@@ -135,7 +135,7 @@ struct ChatDemoView: View {
             .padding()
             .task {
                 do {
-                    let ai = try SwiftAI {
+                    let ai = try Arbiter {
                         try $0.cloud(.anthropic(from: .keychain))
                     }
                     let result = try await ai.generate("Say hello in 3 languages")

@@ -15,7 +15,7 @@ let package = Package(
         .executableTarget(
             name: "MultiProvider",
             dependencies: [
-                .product(name: "SwiftAI", package: "SwiftAI"),
+                .product(name: "Arbiter", package: "Arbiter"),
             ],
             path: "Sources"
         ),

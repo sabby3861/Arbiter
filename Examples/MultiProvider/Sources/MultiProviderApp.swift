@@ -1,15 +1,15 @@
-// SwiftAI — Unified AI Runtime for Swift
+// Arbiter — Unified AI Runtime for Swift
 // Copyright (c) 2026 Sanjay Kumar. MIT License.
 
 import SwiftUI
-import SwiftAI
+import Arbiter
 import os
 
-private let logger = Logger(subsystem: "com.swiftai.examples", category: "MultiProvider")
+private let logger = Logger(subsystem: "com.arbiter.examples", category: "MultiProvider")
 
 @main
 struct MultiProviderApp: App {
-    private let ai: SwiftAI
+    private let ai: Arbiter
 
     init() {
         logger.info("Launching MultiProvider example")
@@ -22,8 +22,8 @@ struct MultiProviderApp: App {
         }
     }
 
-    private static func buildRuntime() -> SwiftAI {
-        SwiftAI { config in
+    private static func buildRuntime() -> Arbiter {
+        Arbiter { config in
             // Deprecated hardcoded-key inits used for demo only; use keychain in production.
             config.cloud(AnthropicProvider(apiKey: "YOUR_ANTHROPIC_KEY")) // swiftlint:disable:this deprecated
             config.cloud(OpenAIProvider(apiKey: "YOUR_OPENAI_KEY")) // swiftlint:disable:this deprecated
@@ -43,7 +43,7 @@ struct MultiProviderApp: App {
 }
 
 struct MultiProviderRootView: View {
-    let ai: SwiftAI
+    let ai: Arbiter
     @State private var selectedTab = 0
 
     var body: some View {
@@ -59,7 +59,7 @@ struct MultiProviderRootView: View {
                 ProviderPicker(ai: ai) { selected in
                     logger.info("User selected provider: \(selected.rawValue)")
                 }
-                SwiftAIChatView(ai: ai)
+                ArbiterChatView(ai: ai)
             }
             .navigationTitle("Chat")
         }

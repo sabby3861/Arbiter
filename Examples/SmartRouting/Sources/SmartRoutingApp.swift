@@ -1,11 +1,11 @@
-// SwiftAI — Unified AI Runtime for Swift
+// Arbiter — Unified AI Runtime for Swift
 // Copyright (c) 2026 Sanjay Kumar. MIT License.
 
 import SwiftUI
-import SwiftAI
+import Arbiter
 import os
 
-private let logger = Logger(subsystem: "com.swiftai.examples", category: "SmartRouting")
+private let logger = Logger(subsystem: "com.arbiter.examples", category: "SmartRouting")
 
 @main
 struct SmartRoutingApp: App {
@@ -22,7 +22,7 @@ struct SmartRoutingRootView: View {
     @State private var privacyMode = false
     @State private var selectedTab = 0
     @State private var analytics = UsageAnalytics()
-    @State private var ai: SwiftAI = buildRuntime(
+    @State private var ai: Arbiter = buildRuntime(
         offline: false,
         lowBudget: false,
         privacy: false
@@ -43,7 +43,7 @@ struct SmartRoutingRootView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 simulationControls
-                SwiftAIChatView(ai: ai)
+                ArbiterChatView(ai: ai)
             }
             .navigationTitle("Smart Routing")
         }
@@ -125,8 +125,8 @@ private func buildRuntime(
     offline: Bool,
     lowBudget: Bool,
     privacy: Bool
-) -> SwiftAI {
-    SwiftAI { config in
+) -> Arbiter {
+    Arbiter { config in
         if !offline {
             // Deprecated hardcoded-key inits used for demo only; use keychain in production.
             config.cloud(AnthropicProvider(apiKey: "YOUR_ANTHROPIC_KEY")) // swiftlint:disable:this deprecated

@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "SwiftAI",
+    name: "Arbiter",
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
@@ -11,8 +11,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "SwiftAI",
-            targets: ["SwiftAI"]),
+            name: "Arbiter",
+            targets: ["Arbiter"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),
@@ -21,15 +21,15 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "SwiftAI",
+            name: "Arbiter",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift", condition: .when(platforms: [.macOS, .iOS])),
                 .product(name: "MLXLLM", package: "mlx-swift-examples", condition: .when(platforms: [.macOS, .iOS])),
             ],
-            path: "Sources/SwiftAI"),
+            path: "Sources/Arbiter"),
         .testTarget(
-            name: "SwiftAITests",
-            dependencies: ["SwiftAI"],
-            path: "Tests/SwiftAITests"),
+            name: "ArbiterTests",
+            dependencies: ["Arbiter"],
+            path: "Tests/ArbiterTests"),
     ]
 )

@@ -1,13 +1,13 @@
 ---
 name: Bug Report
-about: Report a bug in SwiftAI
+about: Report a bug in Arbiter
 title: '[Bug] '
 labels: bug
 ---
 
 ## Environment
 
-- **SwiftAI version**:
+- **Arbiter version**:
 - **Provider(s)**:
 - **Swift version**:
 - **Platform**: (iOS / macOS / visionOS)

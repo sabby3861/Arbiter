@@ -1,6 +1,6 @@
-# SwiftAI Provider Guide
+# Arbiter Provider Guide
 
-SwiftAI supports six providers across cloud, local, and system tiers. This guide covers setup for each one.
+Arbiter supports six providers across cloud, local, and system tiers. This guide covers setup for each one.
 
 ## Cloud Providers
 
@@ -16,8 +16,8 @@ The highest-quality option for complex reasoning and long-form content.
 // Store key once
 try SecureKeyStorage.store(key: "sk-ant-...", for: .anthropic)
 
-// Create SwiftAI with Anthropic
-let ai = try SwiftAI {
+// Create Arbiter with Anthropic
+let ai = try Arbiter {
     try $0.cloud(.anthropic(from: .keychain))
 }
 ```
@@ -34,8 +34,8 @@ Broad model selection with strong general-purpose performance.
 // Store key once
 try SecureKeyStorage.store(key: "sk-...", for: .openAI)
 
-// Create SwiftAI with OpenAI
-let ai = try SwiftAI {
+// Create Arbiter with OpenAI
+let ai = try Arbiter {
     try $0.cloud(.openAI(from: .keychain))
 }
 ```
@@ -52,8 +52,8 @@ Google's models with a generous free tier for experimentation.
 // Store key once
 try SecureKeyStorage.store(key: "AI...", for: .gemini)
 
-// Create SwiftAI with Gemini
-let ai = try SwiftAI {
+// Create Arbiter with Gemini
+let ai = try Arbiter {
     try $0.cloud(.gemini(from: .keychain))
 }
 ```
@@ -74,7 +74,7 @@ Run open-source models locally. Free, private, and works offline once a model is
 
 ```swift
 // No key needed
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.local(OllamaProvider())
 }
 ```
@@ -90,7 +90,7 @@ Apple's machine learning framework for running models natively on Apple Silicon.
 
 ```swift
 // No key needed, auto model selection
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.local(MLXProvider(.auto))
 }
 ```
@@ -108,17 +108,17 @@ Apple's built-in on-device models, integrated with Apple Intelligence.
 
 ```swift
 // No key, no download, just works
-let ai = SwiftAI {
+let ai = Arbiter {
     $0.system(AppleFoundationProvider())
 }
 ```
 
 ## Multi-Provider Setup
 
-The real power of SwiftAI is combining providers. The smart router picks the best one for each request:
+The real power of Arbiter is combining providers. The smart router picks the best one for each request:
 
 ```swift
-let ai = try SwiftAI {
+let ai = try Arbiter {
     // Cloud providers (best quality, requires network)
     try $0.cloud(.anthropic(from: .keychain))
     try $0.cloud(.openAI(from: .keychain))
@@ -133,7 +133,7 @@ let ai = try SwiftAI {
 }
 ```
 
-With this configuration, SwiftAI automatically routes each request to the best available provider based on capability, quality, latency, privacy, and cost. See [RoutingGuide.md](RoutingGuide.md) for details.
+With this configuration, Arbiter automatically routes each request to the best available provider based on capability, quality, latency, privacy, and cost. See [RoutingGuide.md](RoutingGuide.md) for details.
 
 ## Provider Comparison
 

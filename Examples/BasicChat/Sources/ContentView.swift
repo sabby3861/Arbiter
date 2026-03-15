@@ -1,22 +1,22 @@
-// SwiftAI — Unified AI Runtime for Swift
+// Arbiter — Unified AI Runtime for Swift
 // Copyright (c) 2026 Sanjay Kumar. MIT License.
 
 // Replace YOUR_API_KEY with your Anthropic key.
 // In production, use SecureKeyStorage (Keychain) instead of hardcoded keys.
 
 import SwiftUI
-import SwiftAI
+import Arbiter
 import os
 
-private let logger = Logger(subsystem: "com.swiftai.examples", category: "BasicChat")
+private let logger = Logger(subsystem: "com.arbiter.examples", category: "BasicChat")
 
 @main
 struct BasicChatApp: App {
-    private let ai: SwiftAI
+    private let ai: Arbiter
 
     init() {
         logger.info("Launching BasicChat example")
-        self.ai = SwiftAI(provider: Self.makeProvider())
+        self.ai = Arbiter(provider: Self.makeProvider())
     }
 
     private static func makeProvider() -> AnthropicProvider {
@@ -27,7 +27,7 @@ struct BasicChatApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                SwiftAIChatView(ai: ai)
+                ArbiterChatView(ai: ai)
                     .navigationTitle("BasicChat")
             }
         }
