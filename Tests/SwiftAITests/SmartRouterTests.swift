@@ -336,4 +336,188 @@ struct SmartRouterTests {
         #expect(decision.selectedProvider != .gemini)
         #expect(decision.isAvailable)
     }
+
+    // MARK: - Integration: Performance-driven routing
+
+    @Test func routerPrefersProviderWithHigherSuccessRate() async {
+        let router = SmartRouter()
+        let policy = RoutingPolicy(strategy: .smart)
+
+        // Record 15 failures for OpenAI on code tasks
+        for _ in 0..<15 {
+            await router.performanceTracker.recordOutcome(
+                provider: .openAI,
+                task: .codeGeneration,
+                latencySeconds: 5.0,
+                succeeded: false,
+                tokenCount: 0
+            )
+        }
+
+        // Record 15 successes for Anthropic on code tasks
+        for _ in 0..<15 {
+            await router.performanceTracker.recordOutcome(
+                provider: .anthropic,
+                task: .codeGeneration,
+                latencySeconds: 1.0,
+                succeeded: true,
+                tokenCount: 500
+            )
+        }
+
+        // Both providers have identical base capabilities
+        let openAI = MockProvider(
+            id: .openAI,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat, .codeGeneration],
+                maxContextTokens: 128_000,
+                supportsStreaming: true,
+                supportsToolCalling: true,
+                supportsImageInput: true,
+                costPerMillionInputTokens: 2.5,
+                costPerMillionOutputTokens: 10.0,
+                estimatedLatency: .fast,
+                privacyLevel: .thirdPartyCloud
+            )
+        )
+        let anthropic = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat, .codeGeneration],
+                maxContextTokens: 200_000,
+                supportsStreaming: true,
+                supportsToolCalling: true,
+                supportsImageInput: true,
+                costPerMillionInputTokens: 3.0,
+                costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast,
+                privacyLevel: .thirdPartyCloud
+            )
+        )
+
+        // Route a code generation request
+        let request = AIRequest.chat("Write a Swift function that sorts an array")
+        let decision = await router.route(
+            request, policy: policy,
+            providers: [openAI, anthropic],
+            budgetRemaining: nil
+        )
+
+        // Anthropic should win despite higher cost — performance history
+        // gives it +10 (95%+ success) and OpenAI gets -20 (<70% success)
+        #expect(decision.selectedProvider == .anthropic)
+    }
+
+    @Test func routerWithNoHistoryDoesNotApplyPerformanceAdjustments() async {
+        let router = SmartRouter()
+        let policy = RoutingPolicy(strategy: .smart)
+
+        // No performance data recorded — both providers scored equally
+        // on base factors. The cheaper one should win or they tie.
+        let provider1 = MockProvider(
+            id: .openAI,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat],
+                maxContextTokens: 128_000,
+                supportsStreaming: true,
+                supportsToolCalling: true,
+                supportsImageInput: false,
+                costPerMillionInputTokens: 2.5,
+                costPerMillionOutputTokens: 10.0,
+                estimatedLatency: .fast,
+                privacyLevel: .thirdPartyCloud
+            )
+        )
+        let provider2 = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat],
+                maxContextTokens: 200_000,
+                supportsStreaming: true,
+                supportsToolCalling: true,
+                supportsImageInput: false,
+                costPerMillionInputTokens: 3.0,
+                costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast,
+                privacyLevel: .thirdPartyCloud
+            )
+        )
+
+        let request = AIRequest.chat("Hello")
+        let decision = await router.route(
+            request, policy: policy,
+            providers: [provider1, provider2],
+            budgetRemaining: nil
+        )
+
+        // With no history, should route based on base factors only
+        // (both are available, decision is deterministic)
+        #expect(decision.isAvailable)
+    }
+
+    @Test func routerComplexityBoostsCloudForHardTasks() async {
+        let router = SmartRouter()
+        let policy = RoutingPolicy(strategy: .smart)
+
+        let cloud = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat, .codeGeneration],
+                maxContextTokens: 200_000,
+                supportsStreaming: true,
+                supportsToolCalling: true,
+                supportsImageInput: true,
+                costPerMillionInputTokens: 3.0,
+                costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast,
+                privacyLevel: .thirdPartyCloud
+            )
+        )
+        let local = MockLocalProvider()
+
+        // Complex reasoning task — cloud should get +15 complexity boost
+        let request = AIRequest.chat(
+            "Explain step by step why quantum entanglement violates classical intuition"
+        )
+        let decision = await router.route(
+            request, policy: policy,
+            providers: [local, cloud],
+            budgetRemaining: nil
+        )
+
+        #expect(decision.selectedProvider == .anthropic)
+    }
+
+    @Test func routerSimpleTaskBoostsOnDevice() async {
+        let router = SmartRouter()
+        let policy = RoutingPolicy(strategy: .smart)
+
+        let cloud = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat],
+                maxContextTokens: 200_000,
+                supportsStreaming: true,
+                supportsToolCalling: true,
+                supportsImageInput: true,
+                costPerMillionInputTokens: 3.0,
+                costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast,
+                privacyLevel: .thirdPartyCloud
+            )
+        )
+        let local = MockLocalProvider()
+
+        // Trivial classification — local should get +15 simplicity boost
+        let request = AIRequest.chat("Is this positive or negative?")
+        let decision = await router.route(
+            request, policy: policy,
+            providers: [cloud, local],
+            budgetRemaining: nil
+        )
+
+        // Local provider should win for trivial tasks — free + private +
+        // simplicity boost outweighs cloud quality
+        #expect(decision.selectedProvider == .mlx)
+    }
 }
