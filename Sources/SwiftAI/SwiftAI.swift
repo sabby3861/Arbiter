@@ -33,6 +33,9 @@ public final class SwiftAI: Sendable {
     private let router: SmartRouter
     private let costTracker: CostTracker
     private let middlewares: [any AIMiddleware]
+    private let retryConfig: RetryConfiguration?
+    private let structuredOutputHandler = StructuredOutputHandler()
+    private let analyser = RequestAnalyser()
 
     /// Registered providers, exposed for UI components like `ProviderPicker`
     public var registeredProviders: [any AIProvider] { providers }
@@ -48,6 +51,7 @@ public final class SwiftAI: Sendable {
         self.router = SmartRouter()
         self.costTracker = CostTracker()
         self.middlewares = []
+        self.retryConfig = nil
     }
 
     /// Create SwiftAI with full configuration (non-throwing)
@@ -57,9 +61,13 @@ public final class SwiftAI: Sendable {
         self.providers = config.providers
         self.routingPolicy = config.routingPolicy
         self.spendingGuard = config.spendingGuard
-        self.router = SmartRouter(privacyGuard: config.privacyGuard)
+        self.router = SmartRouter(
+            privacyGuard: config.privacyGuard,
+            healthMonitor: config.healthMonitor
+        )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
+        self.retryConfig = config.retryConfig
     }
 
     /// Create SwiftAI with full configuration (throwing, for Keychain-based providers)
@@ -69,14 +77,31 @@ public final class SwiftAI: Sendable {
         self.providers = config.providers
         self.routingPolicy = config.routingPolicy
         self.spendingGuard = config.spendingGuard
-        self.router = SmartRouter(privacyGuard: config.privacyGuard)
+        self.router = SmartRouter(
+            privacyGuard: config.privacyGuard,
+            healthMonitor: config.healthMonitor
+        )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
+        self.retryConfig = config.retryConfig
     }
 
     /// Generate a response from a simple text prompt
     public func generate(_ prompt: String, options: RequestOptions? = nil) async throws -> AIResponse {
         try await performGenerate(messages: [.user(prompt)], options: options)
+    }
+
+    /// Generate a response and decode it into a typed Swift value.
+    public func generate<T: Codable & Sendable>(
+        _ prompt: String,
+        as type: T.Type,
+        options: RequestOptions? = nil
+    ) async throws -> T {
+        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(for: type, userPrompt: prompt)
+        var mergedOptions = options ?? RequestOptions()
+        mergedOptions.responseFormat = .json
+        let response = try await performGenerate(messages: [.user(structuredPrompt)], options: mergedOptions)
+        return try structuredOutputHandler.decode(response.content, as: type)
     }
 
     /// Stream a response from a simple text prompt
@@ -92,12 +117,97 @@ public final class SwiftAI: Sendable {
         try await performGenerate(messages: messages, options: options)
     }
 
+    /// Generate from messages and decode into a typed value.
+    public func chat<T: Codable & Sendable>(
+        _ messages: [Message],
+        as type: T.Type,
+        options: RequestOptions? = nil
+    ) async throws -> T {
+        guard let lastUserMessage = messages.last(where: { $0.role == .user }),
+              let promptText = lastUserMessage.content.text else {
+            throw SwiftAIError.invalidRequest(reason: "No user message found for structured output")
+        }
+
+        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(for: type, userPrompt: promptText)
+        var modifiedMessages = messages.dropLast(where: { $0.id == lastUserMessage.id })
+        modifiedMessages.append(.user(structuredPrompt))
+
+        var mergedOptions = options ?? RequestOptions()
+        mergedOptions.responseFormat = .json
+        let response = try await performGenerate(messages: modifiedMessages, options: mergedOptions)
+        return try structuredOutputHandler.decode(response.content, as: type)
+    }
+
     /// Stream a response from a conversation history
     public func chatStream(
         _ messages: [Message],
         options: RequestOptions? = nil
     ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         streamWithProviderSelection(messages: messages, options: options)
+    }
+
+    /// Estimate the cost of a request across all configured providers
+    /// WITHOUT sending it.
+    ///
+    /// ```swift
+    /// let estimates = await ai.estimateCost("Write a long essay about AI")
+    /// for estimate in estimates {
+    ///     print("\(estimate.provider): $\(estimate.estimatedCost)")
+    /// }
+    /// ```
+    public func estimateCost(
+        _ prompt: String,
+        options: RequestOptions? = nil
+    ) async -> [CostEstimate] {
+        let request = buildRequest(messages: [.user(prompt)], options: options)
+        let analysis = analyser.analyse(request, providers: providers)
+
+        let decision = await routeRequest(request, options: options)
+        let selectedProvider = decision.selectedProvider
+
+        return providers.map { provider in
+            let inputCost = (provider.capabilities.costPerMillionInputTokens ?? 0)
+                / 1_000_000 * Double(analysis.estimatedInputTokens)
+            let outputCost = (provider.capabilities.costPerMillionOutputTokens ?? 0)
+                / 1_000_000 * Double(analysis.estimatedOutputTokens)
+
+            return CostEstimate(
+                provider: provider.id,
+                estimatedInputTokens: analysis.estimatedInputTokens,
+                estimatedOutputTokens: analysis.estimatedOutputTokens,
+                estimatedCost: inputCost + outputCost,
+                isAvailable: true,
+                wouldBeSelected: provider.id == selectedProvider
+            )
+        }
+    }
+}
+
+/// Pre-request cost estimate for a provider
+public struct CostEstimate: Sendable, Identifiable {
+    public var id: ProviderID { provider }
+    public let provider: ProviderID
+    public let estimatedInputTokens: Int
+    public let estimatedOutputTokens: Int
+    public let estimatedCost: Double
+    public let isAvailable: Bool
+    public let wouldBeSelected: Bool
+}
+
+/// Retry configuration for single-provider setups
+public struct RetryConfiguration: Sendable {
+    public let maxAttempts: Int
+    public let baseDelay: Duration
+    public let maxDelay: Duration
+
+    public init(
+        maxAttempts: Int = 3,
+        baseDelay: Duration = .milliseconds(500),
+        maxDelay: Duration = .seconds(30)
+    ) {
+        self.maxAttempts = maxAttempts
+        self.baseDelay = baseDelay
+        self.maxDelay = maxDelay
     }
 }
 
@@ -123,11 +233,30 @@ private extension SwiftAI {
         for providerID in providerOrder.prefix(maxAttempts) {
             guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
             do {
-                return try await executeGenerate(request: request, provider: provider)
+                let startTime = CFAbsoluteTimeGetCurrent()
+                let response = try await executeGenerate(request: request, provider: provider, options: options)
+                let latency = CFAbsoluteTimeGetCurrent() - startTime
+                let detectedTask = decision.analysis?.detectedTask ?? .conversation
+                await router.performanceTracker.recordOutcome(
+                    provider: providerID,
+                    task: detectedTask,
+                    latencySeconds: latency,
+                    succeeded: true,
+                    tokenCount: response.usage?.totalTokens ?? 0
+                )
+                return response
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 attempts.append((providerID, error))
+                let detectedTask = decision.analysis?.detectedTask ?? .conversation
+                await router.performanceTracker.recordOutcome(
+                    provider: providerID,
+                    task: detectedTask,
+                    latencySeconds: 0,
+                    succeeded: false,
+                    tokenCount: 0
+                )
                 logger.debug("Provider \(providerID.rawValue) failed, trying next")
             }
         }
@@ -135,15 +264,37 @@ private extension SwiftAI {
         throw SwiftAIError.allProvidersFailed(attempts: attempts)
     }
 
-    func executeGenerate(request: AIRequest, provider: any AIProvider) async throws -> AIResponse {
+    func executeGenerate(
+        request: AIRequest,
+        provider: any AIProvider,
+        options: RequestOptions? = nil
+    ) async throws -> AIResponse {
         let processedRequest = try await applyRequestMiddleware(request)
         let reservation = try await reserveBudget(for: provider, request: processedRequest)
-        do {
-            let response = try await withTaskCancellationHandler {
+
+        let operation: @Sendable () async throws -> AIResponse = {
+            try await withTaskCancellationHandler {
                 try await provider.generate(processedRequest)
             } onCancel: {
                 logger.debug("Generate cancelled for \(provider.id.rawValue)")
             }
+        }
+
+        do {
+            let response: AIResponse
+            if let timeout = options?.timeout {
+                response = try await withTimeout(timeout) { try await operation() }
+            } else if let retryConfig, !routingPolicy.fallbackEnabled {
+                let engine = RetryEngine(
+                    maxRetries: retryConfig.maxAttempts - 1,
+                    baseDelay: retryConfig.baseDelay,
+                    maxDelay: retryConfig.maxDelay
+                )
+                response = try await engine.execute(operation: operation)
+            } else {
+                response = try await operation()
+            }
+
             await finalizeCost(reservation: reservation, usage: response.usage, provider: provider)
             return try await applyResponseMiddleware(response)
         } catch {
@@ -151,6 +302,26 @@ private extension SwiftAI {
                 await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
             }
             throw error
+        }
+    }
+
+    func withTimeout<T: Sendable>(
+        _ timeout: Duration,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw SwiftAIError.timeout(.anthropic, duration: timeout)
+            }
+            guard let result = try await group.next() else {
+                throw SwiftAIError.timeout(.anthropic, duration: timeout)
+            }
+            group.cancelAll()
+            return result
         }
     }
 
@@ -343,9 +514,6 @@ private extension SwiftAI {
             if let reservation {
                 await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
             }
-            // If we already yielded chunks to the consumer, fallback would
-            // corrupt output (partial from provider 1 + full from provider 2).
-            // Wrap in StreamingFallbackUnsafe to signal the retry loop to stop.
             if hasYieldedChunks {
                 throw StreamingFallbackUnsafe(underlying: error)
             }
@@ -374,6 +542,7 @@ public struct RequestOptions: Sendable {
     public var provider: ProviderID?
     public var privacyRequired: Bool
     public var tags: Set<RequestTag>
+    public var timeout: Duration?
 
     public init(
         model: String? = nil,
@@ -384,7 +553,8 @@ public struct RequestOptions: Sendable {
         responseFormat: ResponseFormat? = nil,
         provider: ProviderID? = nil,
         privacyRequired: Bool = false,
-        tags: Set<RequestTag> = []
+        tags: Set<RequestTag> = [],
+        timeout: Duration? = nil
     ) {
         self.model = model
         self.maxTokens = maxTokens
@@ -395,6 +565,7 @@ public struct RequestOptions: Sendable {
         self.provider = provider
         self.privacyRequired = privacyRequired
         self.tags = tags
+        self.timeout = timeout
     }
 }
 
@@ -405,6 +576,8 @@ public struct Configuration: Sendable {
     var spendingGuard: SpendingGuard?
     var privacyGuard: PrivacyGuard?
     var middlewares: [any AIMiddleware] = []
+    var retryConfig: RetryConfiguration?
+    var healthMonitor: ProviderHealthMonitor?
 
     /// Add a cloud provider (e.g., Anthropic, OpenAI)
     public mutating func cloud(_ provider: any AIProvider) {
@@ -444,5 +617,37 @@ public struct Configuration: Sendable {
     /// Add a middleware to the processing pipeline
     public mutating func middleware(_ middleware: any AIMiddleware) {
         middlewares.append(middleware)
+    }
+
+    /// Configure retry behaviour for single-provider setups
+    public mutating func retry(
+        maxAttempts: Int = 3,
+        baseDelay: Duration = .milliseconds(500),
+        maxDelay: Duration = .seconds(30)
+    ) {
+        retryConfig = RetryConfiguration(
+            maxAttempts: maxAttempts,
+            baseDelay: baseDelay,
+            maxDelay: maxDelay
+        )
+    }
+
+    /// Enable periodic provider health monitoring
+    public mutating func healthCheck(_ config: HealthCheckConfig) {
+        switch config {
+        case .disabled:
+            healthMonitor = nil
+        case .enabled(let interval):
+            healthMonitor = ProviderHealthMonitor(checkInterval: interval)
+        }
+    }
+}
+
+private extension Array where Element == Message {
+    func dropLast(where predicate: (Element) -> Bool) -> [Element] {
+        guard let lastIndex = lastIndex(where: predicate) else { return self }
+        var result = self
+        result.remove(at: lastIndex)
+        return result
     }
 }

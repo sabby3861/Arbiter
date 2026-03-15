@@ -155,6 +155,54 @@ public final class ConversationSession: Identifiable {
         messages.removeAll()
     }
 
+    /// Add a user message, generate a response, and decode it into a typed value
+    public func send<T: Codable & Sendable>(
+        _ text: String,
+        as type: T.Type,
+        using ai: SwiftAI,
+        options: RequestOptions? = nil
+    ) async throws -> T {
+        guard !isGenerating else {
+            throw SwiftAIError.invalidRequest(reason: "A request is already in progress. Wait for it to complete or cancel it first.")
+        }
+
+        isGenerating = true
+        let userMessage = Message.user(text)
+        messages.append(userMessage)
+
+        do {
+            trimToFitTokenWindow()
+            try Task.checkCancellation()
+
+            let handler = StructuredOutputHandler()
+            let structuredPrompt = handler.buildJSONPrompt(for: type, userPrompt: text)
+
+            var mergedOptions = mergeOptions(options)
+            mergedOptions.responseFormat = .json
+
+            var chatMessages = messages
+            if let lastIndex = chatMessages.lastIndex(where: { $0.role == .user }) {
+                chatMessages[lastIndex] = .user(structuredPrompt)
+            }
+
+            let response = try await withTaskCancellationHandler {
+                try await ai.chat(chatMessages, options: mergedOptions)
+            } onCancel: {}
+
+            let assistantMessage = Message.assistant(response.content)
+            messages.append(assistantMessage)
+            isGenerating = false
+
+            return try handler.decode(response.content, as: type)
+        } catch {
+            if messages.last?.role == .user {
+                messages.removeLast()
+            }
+            isGenerating = false
+            throw error
+        }
+    }
+
     /// Estimated token count for the current conversation
     public var estimatedTokenCount: Int {
         estimateTokens(for: messages)

@@ -64,13 +64,60 @@ try await session.send("What is SwiftUI?", using: ai)
 // session.messages is @Observable — your UI updates automatically
 ```
 
-## Smart Router
+## Structured Output
 
-The Smart Router is SwiftAI's core innovation — a multi-factor scoring engine that picks the best provider for every request based on real-time conditions.
+Generate typed Swift values directly — no manual JSON parsing:
+
+```swift
+struct Recipe: Codable {
+    let name: String
+    let ingredients: [String]
+}
+
+let recipe: Recipe = try await ai.generate("Pasta recipe", as: Recipe.self)
+// recipe.name → "Classic Pasta"
+// recipe.ingredients → ["flour", "eggs", "salt", "water"]
+```
+
+Works with conversations too:
+
+```swift
+let analysis: SentimentResult = try await session.send(
+    "Analyse this review: 'Great product!'",
+    as: SentimentResult.self,
+    using: ai
+)
+```
+
+## Intelligent Routing
+
+SwiftAI's router doesn't just match capabilities — it analyses the actual request to determine complexity, intent, and optimal routing. No other library does this.
+
+```swift
+// SwiftAI analyses your request and routes intelligently:
+
+// Simple classification → Apple FM (free, fast, sufficient)
+let sentiment = try await ai.generate("Is this positive? 'Great product!'")
+
+// Complex reasoning → Claude (best quality for hard tasks)
+let analysis = try await ai.generate("Compare microservices vs monolith...")
+
+// Code generation → Cloud provider with best code capability
+let code = try await ai.generate("Write a binary search in Swift")
+
+// All automatic. No manual routing. The router learns and improves.
+```
 
 ### How It Works
 
-For each request, the router evaluates every registered provider across five dimensions:
+The **RequestAnalyser** examines every prompt before routing:
+
+1. **Complexity classification** — trivial, simple, moderate, complex, or expert
+2. **Task detection** — classification, code generation, reasoning, translation, etc.
+3. **Output estimation** — predicts response size based on task type
+4. **Cost estimation** — calculates expected cost per provider
+
+This analysis feeds into the Smart Router's scoring engine:
 
 | Factor | What it measures |
 |--------|-----------------|
@@ -79,11 +126,12 @@ For each request, the router evaluates every registered provider across five dim
 | **Latency** | How fast is the response? (instant → slow) |
 | **Privacy** | Where does data go? (on-device → third-party cloud) |
 | **Cost** | How much does it cost per request? (free → expensive) |
+| **Complexity** | Simple tasks boost free providers; complex tasks boost cloud |
+| **Performance** | Historical success rate and latency per provider |
 
 Each factor produces a score, and the routing **strategy** applies different weights:
 
 ```swift
-// Strategies and what they prioritize:
 .smart               // Balanced across all factors (default)
 .costOptimized       // Heavily weights cost — prefers free/cheap providers
 .privacyFirst        // Heavily weights privacy — prefers on-device
@@ -93,37 +141,46 @@ Each factor produces a score, and the routing **strategy** applies different wei
 .priority([.ollama, .anthropic])  // Try in order, fail over to next
 ```
 
-### How Smart Routing Works — Concrete Example
+### Adaptive Routing
 
-When you send **"Classify this text as positive/negative"**, here's how the router decides:
+The router gets **smarter the more you use it**. The `ProviderPerformanceTracker` records real-world metrics for every request:
 
-| Provider | Capability | Quality | Latency | Privacy | Cost | **Total** |
-|----------|-----------|---------|---------|---------|------|-----------|
-| Apple FM | 10 (chat ✓) | 4 (free) | 16 (fast) | 20 (on-device) | 20 (free) | **14.0** |
-| MLX | 10 (chat ✓) | 4 (free) | 10 (moderate) | 20 (on-device) | 20 (free) | **12.8** |
-| Anthropic | 15 (chat+tools ✓) | 16 (premium) | 16 (fast) | 5 (cloud) | 8 (mid) | **12.0** |
+- **Success rate** per provider per task type
+- **Latency** compared to the global average
+- **Token throughput** for cost efficiency
 
-Result: **Apple FM wins** — it's free, fast, on-device, and sufficient for classification.
+After 10+ requests, the tracker starts adjusting routing scores:
+- High success rate (>95%) → +10 score bonus
+- Low success rate (<70%) → -20 score penalty
+- Faster than average → +5 latency bonus
+- Much slower (>2x average) → -10 penalty
 
-For **"Write a production-grade REST API with error handling"**, the scores shift:
+Performance data persists across app launches via UserDefaults.
 
-| Provider | Capability | Quality | Latency | Privacy | Cost | **Total** |
-|----------|-----------|---------|---------|---------|------|-----------|
-| Anthropic | 15 (tools ✓) | 16 (premium) | 16 (fast) | 5 (cloud) | 8 (mid) | **12.0** |
-| MLX | 10 (code ✓) | 4 (free) | 10 (moderate) | 20 (on-device) | 20 (free) | **12.8** |
-| Apple FM | 10 (no code gen) | 4 (free) | 16 (fast) | 20 (on-device) | 20 (free) | **14.0** |
+### Cost Estimation
 
-With `.qualityFirst` strategy, quality weight triples → **Anthropic wins** for complex tasks.
+Know what a request will cost **before sending it**:
+
+```swift
+let estimates = await ai.estimateCost("Write a detailed essay about AI")
+for estimate in estimates {
+    print("\(estimate.provider): $\(estimate.estimatedCost)")
+}
+// Anthropic: $0.0031
+// OpenAI: $0.0024
+// Gemini: $0.0012
+// MLX: $0.0000
+```
 
 ### Three-Tier Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     Smart Router                         │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  │
-│  │Capability│  │  Privacy  │  │  Budget  │  │ Thermal │  │
-│  │ Matcher  │  │  Guard    │  │  Check   │  │  Check  │  │
-│  └─────────┘  └──────────┘  └──────────┘  └─────────┘  │
+│                  Intelligent Router                      │
+│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐  │
+│  │ Request  │ │Capability│ │ Provider │ │Environment │  │
+│  │ Analyser │ │ Matcher  │ │ Tracker  │ │  Checks    │  │
+│  └─────────┘ └──────────┘ └──────────┘ └────────────┘  │
 └──────┬──────────────┬──────────────┬───────────────┬─────┘
        │              │              │               │
 ┌──────▼──────┐┌──────▼──────┐┌──────▼──────┐┌──────▼──────┐
@@ -189,6 +246,38 @@ let ai = SwiftAI {
     $0.spendingLimit(5.00, action: .fallbackToCheaper)
 }
 // When budget runs low, automatically switches to cheaper/free providers
+```
+
+## Per-Request Timeout
+
+Override the default 30-second timeout for individual requests:
+
+```swift
+let options = RequestOptions(timeout: .seconds(60))
+let response = try await ai.generate("Write a long essay", options: options)
+```
+
+## Retry Configuration
+
+Configure automatic retries for single-provider setups:
+
+```swift
+let ai = SwiftAI {
+    $0.cloud(anthropicProvider)
+    $0.retry(maxAttempts: 3, baseDelay: .milliseconds(500), maxDelay: .seconds(30))
+}
+```
+
+## Provider Health Monitoring
+
+Enable periodic availability checks to avoid routing to unhealthy providers:
+
+```swift
+let ai = SwiftAI {
+    $0.cloud(anthropicProvider)
+    $0.local(OllamaProvider())
+    $0.healthCheck(.enabled(interval: .minutes(5)))
+}
 ```
 
 ## Supported Providers
@@ -288,7 +377,7 @@ Shows total requests, tokens used, estimated cost, per-provider breakdown with b
 RoutingDebugView(router: ai.smartRouter)
 ```
 
-Live feed of routing decisions — shows timestamp, selected provider, reason, fallbacks, and contributing factors. Color-coded by provider tier.
+Live feed of routing decisions — shows timestamp, selected provider, reason, fallbacks, contributing factors, detected complexity, detected task type, and estimated costs per provider.
 
 ### Lifecycle Management
 
@@ -334,9 +423,10 @@ Structured logging with automatic credential redaction:
 
 ### Response Cache
 
-In-memory cache to reduce API costs:
+In-memory or disk-backed cache to reduce API costs:
 ```swift
 let cache = ResponseCache(maxEntries: 500, ttl: .seconds(300))
+let diskCache = ResponseCache(maxEntries: 1000, ttl: .seconds(600), persistence: .disk)
 ```
 
 ### Usage Analytics
@@ -455,6 +545,15 @@ swift package generate-documentation
 - [x] Usage analytics with cross-session persistence
 - [x] Lifecycle management for on-device providers
 - [x] Security documentation and proxy architecture guide
+- [x] Structured output (typed Codable responses)
+- [x] Request intelligence engine (complexity, task detection, cost estimation)
+- [x] Adaptive routing (learns from usage patterns)
+- [x] Pre-request cost estimation API
+- [x] Per-request timeout configuration
+- [x] Configurable retry engine
+- [x] Disk-backed response cache
+- [x] Provider health monitoring
+- [x] Tool calling documentation
 - [ ] v0.2 — MCP client support
 - [ ] v0.2 — Certificate pinning for cloud providers
 - [ ] v0.3 — Conversation persistence
