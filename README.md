@@ -1,6 +1,10 @@
 # Arbiter
 
 [![CI](https://github.com/sabby3861/Arbiter/actions/workflows/ci.yml/badge.svg)](https://github.com/sabby3861/Arbiter/actions/workflows/ci.yml)
+[![Swift 6.1](https://img.shields.io/badge/Swift-6.1-F05138.svg?style=flat&logo=swift)](https://swift.org)
+[![Platforms](https://img.shields.io/badge/Platforms-iOS%2017%20|%20macOS%2014%20|%20visionOS%201-blue.svg)](https://developer.apple.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![SPM Compatible](https://img.shields.io/badge/SPM-Compatible-brightgreen.svg)](https://swift.org/package-manager/)
 
 **One API for every AI — cloud, on-device, and Apple Intelligence.**
 
