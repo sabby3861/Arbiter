@@ -104,12 +104,7 @@ private extension CapabilityMatcher {
     static func scoreCost(_ caps: ProviderCapabilities) -> Double {
         let totalCost = (caps.costPerMillionInputTokens ?? 0) + (caps.costPerMillionOutputTokens ?? 0)
         if totalCost == 0 { return 20 }
-        switch totalCost {
-        case ..<2: return 18
-        case 2..<10: return 14
-        case 10..<30: return 8
-        default: return 3
-        }
+        return max(1, 20 - 8 * log10(max(totalCost, 0.1)))
     }
 }
 

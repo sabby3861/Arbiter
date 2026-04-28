@@ -325,6 +325,58 @@ struct SmartRouterTests {
         #expect(decision.selectedProvider == .anthropic)
     }
 
+    @Test func smartRoutePopulatesCandidateScores() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy.smart
+        let request = AIRequest.chat("Hello")
+        let providers: [any AIProvider] = [cloudProvider(), cloudProvider(id: .openAI), localProvider()]
+
+        let decision = await router.route(request, policy: policy, providers: providers, budgetRemaining: nil)
+        #expect(decision.candidateScores.count == providers.count)
+        #expect(decision.candidateScores.filter(\.isSelected).count == 1)
+
+        let selected = decision.candidateScores.first { $0.isSelected }
+        #expect(selected?.provider == decision.selectedProvider)
+
+        let sorted = decision.candidateScores.map(\.score)
+        #expect(sorted == sorted.sorted(by: >))
+    }
+
+    @Test func costOptimizedDifferentiatesSimilarProviders() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy(strategy: .costOptimized)
+        let request = AIRequest.chat("Classify: positive or negative")
+
+        let expensive = MockProvider(
+            id: .anthropic,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 200_000,
+                supportsStreaming: true, supportsToolCalling: true, supportsImageInput: true,
+                costPerMillionInputTokens: 3.0, costPerMillionOutputTokens: 15.0,
+                estimatedLatency: .fast, privacyLevel: .thirdPartyCloud
+            )
+        )
+        let cheaper = MockProvider(
+            id: .openAI,
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 128_000,
+                supportsStreaming: true, supportsToolCalling: true, supportsImageInput: true,
+                costPerMillionInputTokens: 2.5, costPerMillionOutputTokens: 10.0,
+                estimatedLatency: .fast, privacyLevel: .thirdPartyCloud
+            )
+        )
+
+        let decision = await router.route(
+            request, policy: policy, providers: [expensive, cheaper], budgetRemaining: nil
+        )
+        #expect(decision.selectedProvider == .openAI)
+
+        let scores = decision.candidateScores
+        let openAIScore = scores.first { $0.provider == .openAI }?.score ?? 0
+        let anthropicScore = scores.first { $0.provider == .anthropic }?.score ?? 0
+        #expect(openAIScore > anthropicScore)
+    }
+
     @Test func fixedRouteToNonExistentProviderFallsBack() async {
         let router = makeRouter()
         let policy = RoutingPolicy(strategy: .fixed(.gemini))
