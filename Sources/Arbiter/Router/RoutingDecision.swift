@@ -11,6 +11,7 @@ public struct RoutingDecision: Sendable, Equatable {
     public let confidenceScore: Double
     public let factors: [RoutingFactor]
     public let analysis: RequestAnalysis?
+    public let candidateScores: [CandidateScore]
 
     public init(
         selectedProvider: ProviderID?,
@@ -18,7 +19,8 @@ public struct RoutingDecision: Sendable, Equatable {
         alternativeProviders: [ProviderID] = [],
         confidenceScore: Double = 1.0,
         factors: [RoutingFactor] = [],
-        analysis: RequestAnalysis? = nil
+        analysis: RequestAnalysis? = nil,
+        candidateScores: [CandidateScore] = []
     ) {
         self.selectedProvider = selectedProvider
         self.reason = reason
@@ -26,6 +28,7 @@ public struct RoutingDecision: Sendable, Equatable {
         self.confidenceScore = confidenceScore
         self.factors = factors
         self.analysis = analysis
+        self.candidateScores = candidateScores
     }
 
     /// No providers could handle the request.
@@ -72,5 +75,20 @@ public struct RoutingDebugEntry: Identifiable, Sendable {
         self.timestamp = timestamp
         self.requestSummary = requestSummary
         self.decision = decision
+    }
+}
+
+/// Score for a single candidate provider, sorted by score descending.
+public struct CandidateScore: Sendable, Equatable {
+    public let provider: ProviderID
+    public let score: Double
+    public let reasoning: [String]
+    public let isSelected: Bool
+
+    public init(provider: ProviderID, score: Double, reasoning: [String], isSelected: Bool) {
+        self.provider = provider
+        self.score = score
+        self.reasoning = reasoning
+        self.isSelected = isSelected
     }
 }

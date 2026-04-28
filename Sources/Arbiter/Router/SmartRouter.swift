@@ -362,13 +362,23 @@ private extension SmartRouter {
             ? "\(best.providerID.displayName) selected (score: \(Int(best.adjustedScore)))"
             : best.reasoning.joined(separator: "; ")
 
+        let candidates = scores.map { s in
+            CandidateScore(
+                provider: s.providerID,
+                score: s.adjustedScore,
+                reasoning: s.reasoning,
+                isSelected: s.providerID == best.providerID
+            )
+        }
+
         return RoutingDecision(
             selectedProvider: best.providerID,
             reason: reason,
             alternativeProviders: alternatives,
             confidenceScore: min(best.adjustedScore / 20.0, 1.0),
             factors: factors,
-            analysis: analysis
+            analysis: analysis,
+            candidateScores: candidates
         )
     }
 
