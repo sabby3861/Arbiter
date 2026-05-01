@@ -8,6 +8,10 @@
 
 **One API for every AI — cloud, on-device, and Apple Intelligence.**
 
+<p align="center">
+  <img src="Assets/demo.gif" alt="Arbiter Demo" width="280">
+</p>
+
 Arbiter is a unified AI runtime for Swift that lets you call any AI provider through a single, consistent interface. Write your AI code once, then swap providers — or run them all simultaneously with intelligent routing.
 
 ## Quick Start
