@@ -302,7 +302,7 @@ struct ConcurrencyTests {
         }
 
         // Give the task a moment to start, then cancel it
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(200))
         task.cancel()
 
         let result = await task.result
