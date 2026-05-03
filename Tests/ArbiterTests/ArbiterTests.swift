@@ -294,15 +294,16 @@ struct ConcurrencyTests {
     }
 
     @Test func taskCancellationPropagates() async throws {
-        let slowProvider = SlowMockProvider(delay: .seconds(10))
+        let generateStarted = AsyncStream<Void>.makeStream()
+        let slowProvider = CancellationTestProvider(onGenerateStart: generateStarted.continuation)
         let ai = Arbiter(provider: slowProvider)
 
         let task = Task {
             try await ai.generate("This should be cancelled")
         }
 
-        // Give the task a moment to start, then cancel it
-        try await Task.sleep(for: .milliseconds(50))
+        // Wait until generate() is actually executing inside the provider
+        for await _ in generateStarted.stream { break }
         task.cancel()
 
         let result = await task.result
@@ -387,6 +388,7 @@ struct SlowMockProvider: AIProvider, Sendable {
     let id: ProviderID = .anthropic
     let delay: Duration
     let available: Bool
+    let onGenerateStart: AsyncStream<Void>.Continuation?
 
     let capabilities = ProviderCapabilities(
         supportedTasks: [.chat],
@@ -400,9 +402,10 @@ struct SlowMockProvider: AIProvider, Sendable {
         privacyLevel: .thirdPartyCloud
     )
 
-    init(delay: Duration = .seconds(1), available: Bool = true) {
+    init(delay: Duration = .seconds(1), available: Bool = true, onGenerateStart: AsyncStream<Void>.Continuation? = nil) {
         self.delay = delay
         self.available = available
+        self.onGenerateStart = onGenerateStart
     }
 
     var isAvailable: Bool {
@@ -413,6 +416,8 @@ struct SlowMockProvider: AIProvider, Sendable {
     }
 
     func generate(_ request: AIRequest) async throws -> AIResponse {
+        onGenerateStart?.yield()
+        try Task.checkCancellation()
         try await Task.sleep(for: delay)
         try Task.checkCancellation()
         return AIResponse(
@@ -433,5 +438,35 @@ struct SlowMockProvider: AIProvider, Sendable {
             ))
             continuation.finish()
         }
+    }
+}
+
+/// A provider specifically for testing task cancellation — instant availability, slow generate
+struct CancellationTestProvider: AIProvider, Sendable {
+    let id: ProviderID = .anthropic
+    let onGenerateStart: AsyncStream<Void>.Continuation
+
+    let capabilities = ProviderCapabilities(
+        supportedTasks: [.chat],
+        maxContextTokens: 100_000,
+        supportsStreaming: false,
+        supportsToolCalling: false,
+        supportsImageInput: false,
+        costPerMillionInputTokens: 1.0,
+        costPerMillionOutputTokens: 5.0,
+        estimatedLatency: .fast,
+        privacyLevel: .thirdPartyCloud
+    )
+
+    var isAvailable: Bool { true }
+
+    func generate(_ request: AIRequest) async throws -> AIResponse {
+        onGenerateStart.yield()
+        try await Task.sleep(for: .seconds(60))
+        return AIResponse(id: "cancel-test", content: "Should not reach here", model: "test", provider: .anthropic)
+    }
+
+    func stream(_ request: AIRequest) -> AsyncThrowingStream<AIStreamChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
     }
 }

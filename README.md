@@ -576,6 +576,29 @@ swift package generate-documentation
 - [ ] v0.3 — Conversation persistence
 - [ ] v0.3 — Function calling abstraction
 
+## Contributing
+
+Contributions are welcome! Whether it's a bug fix, new feature, documentation improvement, or test coverage — every contribution helps.
+
+### Getting Started
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feat/your-feature`)
+3. Make your changes and add tests
+4. Run the test suite (`swift test`)
+5. Commit your changes and push to your fork
+6. Open a Pull Request against `main`
+
+### Ways to Contribute
+
+- **Good First Issues** — Check out issues labelled [`good first issue`](https://github.com/sabby3861/Arbiter/labels/good%20first%20issue) for beginner-friendly tasks
+- **Feature Requests** — Have an idea? Open a [feature request](https://github.com/sabby3861/Arbiter/issues/new?template=feature_request.md)
+- **Bug Reports** — Found a bug? Open a [bug report](https://github.com/sabby3861/Arbiter/issues/new?template=bug_report.md)
+- **Documentation** — Improvements to guides, docstrings, or examples
+- **New Providers** — Add support for additional AI providers
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
