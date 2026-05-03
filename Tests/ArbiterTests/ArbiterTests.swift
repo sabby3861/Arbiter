@@ -297,12 +297,14 @@ struct ConcurrencyTests {
         let slowProvider = SlowMockProvider(delay: .seconds(10))
         let ai = Arbiter(provider: slowProvider)
 
+        let started = AsyncStream<Void>.makeStream()
         let task = Task {
-            try await ai.generate("This should be cancelled")
+            started.continuation.yield()
+            return try await ai.generate("This should be cancelled")
         }
 
-        // Give the task a moment to start, then cancel it
-        try await Task.sleep(for: .milliseconds(200))
+        // Wait until the task has actually started before cancelling
+        for await _ in started.stream { break }
         task.cancel()
 
         let result = await task.result
