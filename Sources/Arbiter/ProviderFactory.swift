@@ -74,7 +74,18 @@ public struct ProviderFactory: Sendable {
     /// Create an Apple Foundation Models provider (no API key needed)
     public static func appleFoundation() -> ProviderFactory {
         ProviderFactory {
-            AppleFoundationProvider()
+            #if canImport(FoundationModels)
+            if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+                return AppleFoundationProvider()
+            } else {
+                throw ArbiterError.providerUnavailable(
+                    .appleFoundation,
+                    reason: "Apple Foundation Models requires iOS 26+ / macOS 26+ / visionOS 26+ with Apple Intelligence enabled."
+                )
+            }
+            #else
+            return AppleFoundationProvider()
+            #endif
         }
     }
 }

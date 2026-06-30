@@ -42,7 +42,7 @@ enum FoundationModelsAvailabilityBridge {
         switch availability {
         case .available:
             return true
-        case .notAvailable, .temporarilyUnavailable:
+        case .unavailable:
             return false
         @unknown default:
             logger.warning("Unknown Apple FM availability state")
@@ -55,7 +55,7 @@ enum FoundationModelsAvailabilityBridge {
         switch availability {
         case .available:
             return "Available"
-        case .notAvailable(let reason):
+        case .unavailable(let reason):
             switch reason {
             case .deviceNotEligible:
                 return "This device does not support Apple Intelligence"
@@ -66,8 +66,6 @@ enum FoundationModelsAvailabilityBridge {
             @unknown default:
                 return "Apple Foundation Models are not available"
             }
-        case .temporarilyUnavailable:
-            return "Apple Foundation Models are temporarily unavailable. Try again later."
         @unknown default:
             return "Apple Foundation Models are not available"
         }
