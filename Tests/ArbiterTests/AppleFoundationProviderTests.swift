@@ -9,11 +9,13 @@ import Testing
 struct AppleFoundationProviderTests {
 
     @Test func providerHasCorrectId() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(provider.id == .appleFoundation)
     }
 
     @Test func providerCapabilitiesAreOnDevice() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(provider.capabilities.privacyLevel == .onDevice)
         #expect(provider.capabilities.costPerMillionInputTokens == nil)
@@ -22,6 +24,7 @@ struct AppleFoundationProviderTests {
     }
 
     @Test func providerSupportsChatAndSummarization() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         let tasks = provider.capabilities.supportedTasks
         #expect(tasks.contains(.chat))
@@ -31,6 +34,7 @@ struct AppleFoundationProviderTests {
     }
 
     @Test func providerDoesNotSupportToolCalling() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(!provider.capabilities.supportsToolCalling)
     }
@@ -75,26 +79,31 @@ struct AppleFoundationProviderTests {
     }
 
     @Test func providerHasFastLatency() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(provider.capabilities.estimatedLatency == .fast)
     }
 
     @Test func providerDoesNotSupportImageInput() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(!provider.capabilities.supportsImageInput)
     }
 
     @Test func providerContextWindowIs4K() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(provider.capabilities.maxContextTokens == 4_096)
     }
 
     @Test func providerDoesNotSupportCodeGeneration() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(!provider.capabilities.supportedTasks.contains(.codeGeneration))
     }
 
     @Test func providerDoesNotSupportEmbedding() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
         #expect(!provider.capabilities.supportedTasks.contains(.embedding))
     }

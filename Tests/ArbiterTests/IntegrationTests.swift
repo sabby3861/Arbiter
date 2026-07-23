@@ -231,15 +231,32 @@ struct IntegrationTests {
 
     @Test func appleFoundationFactoryCreatesProvider() throws {
         let factory = ProviderFactory.appleFoundation()
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+            let provider = try factory.createProvider()
+            #expect(provider.id == .appleFoundation)
+        } else {
+            #expect(throws: ArbiterError.self) {
+                _ = try factory.createProvider()
+            }
+        }
+        #else
         let provider = try factory.createProvider()
         #expect(provider.id == .appleFoundation)
+        #endif
     }
 
     @Test func threeTierConfigurationCompiles() {
         let ai = Arbiter {
             $0.cloud(MockProvider(id: .anthropic))
             $0.local(MLXProvider(.auto))
+            #if canImport(FoundationModels)
+            if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+                $0.system(AppleFoundationProvider())
+            }
+            #else
             $0.system(AppleFoundationProvider())
+            #endif
             $0.routing(.smart)
         }
         _ = ai
