@@ -229,21 +229,11 @@ struct IntegrationTests {
         #expect(provider.id == .mlx)
     }
 
+    @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
     @Test func appleFoundationFactoryCreatesProvider() throws {
         let factory = ProviderFactory.appleFoundation()
-        #if canImport(FoundationModels)
-        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-            let provider = try factory.createProvider()
-            #expect(provider.id == .appleFoundation)
-        } else {
-            #expect(throws: ArbiterError.self) {
-                _ = try factory.createProvider()
-            }
-        }
-        #else
         let provider = try factory.createProvider()
         #expect(provider.id == .appleFoundation)
-        #endif
     }
 
     @Test func threeTierConfigurationCompiles() {

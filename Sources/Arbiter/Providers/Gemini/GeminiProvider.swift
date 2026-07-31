@@ -51,8 +51,21 @@ public struct GeminiProvider: AIProvider, Sendable {
         self.init(resolvedKey: key, baseURL: nil, defaultModel: defaultModel)
     }
 
+    /// Create with a credential supplied by an application's secure credential manager.
+    public init(
+        credential: String,
+        baseURL: URL? = nil,
+        defaultModel: GeminiModel = .flash25
+    ) {
+        self.init(
+            resolvedKey: credential,
+            baseURL: baseURL,
+            defaultModel: defaultModel
+        )
+    }
+
     /// Create with a raw API key string
-    @available(*, deprecated, message: "Use init(keyStorage:) with SecureKeyStorage for production apps")
+    @available(*, deprecated, message: "Use init(keyStorage:) or init(credential:)")
     public init(
         apiKey: String,
         baseURL: URL? = nil,

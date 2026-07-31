@@ -54,8 +54,23 @@ public struct OpenAIProvider: AIProvider, Sendable {
         self.init(resolvedKey: key, baseURL: baseURL, organization: organization, defaultModel: defaultModel)
     }
 
+    /// Create with a credential supplied by an application's secure credential manager.
+    public init(
+        credential: String,
+        baseURL: URL? = nil,
+        organization: String? = nil,
+        defaultModel: OpenAIModel = .gpt4o
+    ) {
+        self.init(
+            resolvedKey: credential,
+            baseURL: baseURL,
+            organization: organization,
+            defaultModel: defaultModel
+        )
+    }
+
     /// Create with a raw API key string
-    @available(*, deprecated, message: "Use init(keyStorage:) with SecureKeyStorage for production apps")
+    @available(*, deprecated, message: "Use init(keyStorage:) or init(credential:)")
     public init(
         apiKey: String,
         baseURL: URL? = nil,

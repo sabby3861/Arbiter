@@ -59,6 +59,19 @@ public struct AnthropicProvider: AIProvider, Sendable {
         self.init(resolvedKey: key, baseURL: baseURL, defaultModel: defaultModel)
     }
 
+    /// Create with a credential supplied by an application's secure credential manager.
+    public init(
+        credential: String,
+        baseURL: URL? = nil,
+        defaultModel: AnthropicModel = .claude4Sonnet
+    ) {
+        self.init(
+            resolvedKey: credential,
+            baseURL: baseURL,
+            defaultModel: defaultModel
+        )
+    }
+
     /// Create an Anthropic provider with a raw API key string.
     ///
     /// Prefer `init(keyStorage:)` with `SecureKeyStorage` for production apps.
@@ -66,7 +79,7 @@ public struct AnthropicProvider: AIProvider, Sendable {
     ///   - apiKey: Your Anthropic API key
     ///   - baseURL: Custom base URL (defaults to Anthropic's API)
     ///   - defaultModel: Model to use when none is specified in requests
-    @available(*, deprecated, message: "Use init(keyStorage:) with SecureKeyStorage for production apps")
+    @available(*, deprecated, message: "Use init(keyStorage:) or init(credential:)")
     public init(
         apiKey: String,
         baseURL: URL? = nil,

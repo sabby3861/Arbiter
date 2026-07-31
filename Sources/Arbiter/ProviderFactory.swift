@@ -75,18 +75,7 @@ public struct ProviderFactory: Sendable {
     @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
     public static func appleFoundation() -> ProviderFactory {
         ProviderFactory {
-            #if canImport(FoundationModels)
-            if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-                return AppleFoundationProvider()
-            } else {
-                throw ArbiterError.providerUnavailable(
-                    .appleFoundation,
-                    reason: "Apple Foundation Models requires iOS 26+ / macOS 26+ / visionOS 26+ with Apple Intelligence enabled."
-                )
-            }
-            #else
-            return AppleFoundationProvider()
-            #endif
+            AppleFoundationProvider()
         }
     }
 }
