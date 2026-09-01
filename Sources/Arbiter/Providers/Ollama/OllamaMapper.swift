@@ -26,9 +26,7 @@ struct OllamaMapper: Sendable {
         }
 
         for message in request.messages where message.role != .system {
-            if let mapped = mapMessageToJSON(message) {
-                messages.append(mapped)
-            }
+            messages.append(contentsOf: mapMessageToJSON(message))
         }
 
         body["messages"] = messages
@@ -115,37 +113,101 @@ struct OllamaMapper: Sendable {
 }
 
 private extension OllamaMapper {
-    func mapMessageToJSON(_ message: Message) -> [String: Any]? {
+    func mapMessageToJSON(_ message: Message) -> [[String: Any]] {
         let role: String
         switch message.role {
         case .user: role = "user"
         case .assistant: role = "assistant"
         case .system: role = "system"
-        case .tool: role = "user"
+        case .tool: role = "tool"
         }
 
         switch message.content {
         case .text(let text):
-            return ["role": role, "content": text]
+            return [["role": role, "content": text]]
 
         case .image(let source):
             switch source {
             case .base64(let data, _):
-                return ["role": role, "content": "", "images": [data]]
+                return [["role": role, "content": "", "images": [data]]]
             case .url:
-                return ["role": role, "content": ""]
+                return [["role": role, "content": ""]]
             }
 
-        case .toolResult(let result):
-            return ["role": role, "content": result.content]
+        case .toolCalls(let calls):
+            return calls.isEmpty ? [] : [assistantToolCallMessage(text: "", calls: calls)]
+
+        case .toolResults(let results):
+            return results.map { toolResultMessage($0) }
 
         case .mixed(let parts):
-            let text = parts.compactMap { $0.text }.joined(separator: "\n")
-            return ["role": role, "content": text]
-
-        default:
-            return nil
+            return mapMixedContentToJSON(parts, role: role)
         }
+    }
+
+    /// Ollama carries tool calls on one assistant message and each tool result on
+    /// its own `role: "tool"` message, so a mixed turn fans out.
+    ///
+    /// Results come first: they answer the preceding assistant `tool_calls` turn and
+    /// must not be separated from it. A turn containing tool calls is emitted as
+    /// `assistant` whatever role the caller gave it.
+    func mapMixedContentToJSON(_ parts: [MessageContent], role: String) -> [[String: Any]] {
+        let text = flattenedText(parts).joined(separator: "\n")
+        let images = flattenedImages(parts)
+        let calls = parts.flatMap(\.allToolCalls)
+        let results = parts.flatMap(\.allToolResults)
+
+        var messages: [[String: Any]] = results.map { toolResultMessage($0) }
+        if !calls.isEmpty {
+            messages.append(assistantToolCallMessage(text: text, calls: calls))
+        } else if !text.isEmpty || !images.isEmpty {
+            var message: [String: Any] = ["role": role, "content": text]
+            if !images.isEmpty {
+                message["images"] = images
+            }
+            messages.append(message)
+        }
+        return messages
+    }
+
+    /// Text of every non-tool part; tool results become their own messages.
+    func flattenedText(_ parts: [MessageContent]) -> [String] {
+        parts.flatMap { part -> [String] in
+            switch part {
+            case .text(let text): [text]
+            case .mixed(let nested): flattenedText(nested)
+            default: []
+            }
+        }
+    }
+
+    func flattenedImages(_ parts: [MessageContent]) -> [String] {
+        parts.flatMap { part -> [String] in
+            switch part {
+            case .image(.base64(let data, _)): [data]
+            case .mixed(let nested): flattenedImages(nested)
+            default: []
+            }
+        }
+    }
+
+    func assistantToolCallMessage(text: String, calls: [ToolCall]) -> [String: Any] {
+        [
+            "role": "assistant",
+            "content": text,
+            // Ollama's history format has no call id — only the function payload.
+            "tool_calls": calls.map { call in
+                ["function": ["name": call.name, "arguments": call.arguments.foundationObject]]
+            },
+        ]
+    }
+
+    func toolResultMessage(_ result: ToolResult) -> [String: Any] {
+        var message: [String: Any] = ["role": "tool", "content": result.content]
+        if let name = result.name {
+            message["tool_name"] = name
+        }
+        return message
     }
 
     func mapFinishReason(from json: [String: Any]) -> FinishReason {

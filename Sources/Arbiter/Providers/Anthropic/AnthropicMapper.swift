@@ -36,7 +36,7 @@ struct AnthropicMapper: Sendable {
             body["system"] = systemPrompt
         }
 
-        body["messages"] = request.messages.compactMap { mapMessageToJSON($0) }
+        body["messages"] = request.messages.flatMap { mapMessageToJSON($0) }
 
         if let tools = request.tools, !tools.isEmpty {
             body["tools"] = tools.map { mapToolToJSON($0) }
@@ -154,51 +154,100 @@ struct AnthropicMapper: Sendable {
 
 // Helpers for JSON mapping
 private extension AnthropicMapper {
-    func mapMessageToJSON(_ message: Message) -> [String: Any]? {
-        guard message.role != .system else { return nil }
+    func mapMessageToJSON(_ message: Message) -> [[String: Any]] {
+        guard message.role != .system else { return [] }
 
-        let role: String
-        switch message.role {
-        case .user: role = "user"
-        case .assistant: role = "assistant"
-        case .tool: role = "user"
-        case .system: return nil
-        }
-
-        let content: Any
         switch message.content {
         case .text(let text):
-            content = text
+            return [["role": role(for: message.role), "content": text]]
 
         case .image(let source):
-            content = [imageContentBlock(source)].compactMap { $0 }
+            let blocks = [imageContentBlock(source)].compactMap { $0 }
+            // Anthropic rejects a message whose content array is empty.
+            return blocks.isEmpty ? [] : [["role": role(for: message.role), "content": blocks]]
 
-        case .toolCall:
-            return nil
+        case .toolCalls(let calls):
+            return calls.isEmpty ? [] : [toolUseMessage(leadingBlocks: [], calls: calls)]
 
-        case .toolResult(let result):
-            content = [[
-                "type": "tool_result",
-                "tool_use_id": result.toolCallId,
-                "content": result.content,
-            ]]
+        case .toolResults(let results):
+            return results.isEmpty ? [] : [toolResultMessage(results: results, trailingBlocks: [])]
 
         case .mixed(let parts):
-            content = parts.compactMap { mapContentPartToJSON($0) }
+            return mapMixedContentToJSON(parts, role: message.role)
         }
-
-        return ["role": role, "content": content]
     }
 
-    func mapContentPartToJSON(_ part: MessageContent) -> [String: Any]? {
+    /// Anthropic constrains where tool blocks may sit: `tool_use` belongs to an
+    /// assistant turn, `tool_result` to a user turn, and every `tool_result` block
+    /// must precede any other block in the message carrying it. A mixed turn is
+    /// reshaped to satisfy that — including splitting into two messages when the
+    /// caller put calls and results in the same turn.
+    func mapMixedContentToJSON(_ parts: [MessageContent], role messageRole: Role) -> [[String: Any]] {
+        let plain = parts.flatMap { plainContentBlocks($0) }
+        let calls = parts.flatMap(\.allToolCalls)
+        let results = parts.flatMap(\.allToolResults)
+
+        var messages: [[String: Any]] = []
+        if !results.isEmpty {
+            // With no calls to split off, the plain blocks ride along after the results.
+            messages.append(toolResultMessage(
+                results: results,
+                trailingBlocks: calls.isEmpty ? plain : []
+            ))
+        }
+        if !calls.isEmpty {
+            messages.append(toolUseMessage(leadingBlocks: plain, calls: calls))
+        } else if results.isEmpty, !plain.isEmpty {
+            messages.append(["role": role(for: messageRole), "content": plain])
+        }
+        return messages
+    }
+
+    /// Text and image blocks only — tool blocks are placed by the caller, which
+    /// has to control their position and the message role.
+    func plainContentBlocks(_ part: MessageContent) -> [[String: Any]] {
         switch part {
         case .text(let text):
-            return textContentBlock(text)
+            return [textContentBlock(text)]
         case .image(let source):
-            return imageContentBlock(source)
-        default:
-            return nil
+            return [imageContentBlock(source)].compactMap { $0 }
+        case .mixed(let nested):
+            return nested.flatMap { plainContentBlocks($0) }
+        case .toolCalls, .toolResults:
+            return []
         }
+    }
+
+    func toolUseMessage(leadingBlocks: [[String: Any]], calls: [ToolCall]) -> [String: Any] {
+        ["role": "assistant", "content": leadingBlocks + calls.map { toolUseContentBlock($0) }]
+    }
+
+    func toolResultMessage(results: [ToolResult], trailingBlocks: [[String: Any]]) -> [String: Any] {
+        ["role": "user", "content": results.map { toolResultContentBlock($0) } + trailingBlocks]
+    }
+
+    func role(for role: Role) -> String {
+        switch role {
+        case .assistant: "assistant"
+        case .user, .tool, .system: "user"
+        }
+    }
+
+    func toolUseContentBlock(_ call: ToolCall) -> [String: Any] {
+        [
+            "type": "tool_use",
+            "id": call.id,
+            "name": call.name,
+            "input": call.arguments.foundationObject,
+        ]
+    }
+
+    func toolResultContentBlock(_ result: ToolResult) -> [String: Any] {
+        [
+            "type": "tool_result",
+            "tool_use_id": result.toolCallId,
+            "content": result.content,
+        ]
     }
 
     func textContentBlock(_ text: String) -> [String: Any] {

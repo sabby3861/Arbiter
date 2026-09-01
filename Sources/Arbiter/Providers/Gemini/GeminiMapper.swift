@@ -16,7 +16,7 @@ struct GeminiMapper: Sendable {
     func buildRequestBody(_ request: AIRequest) throws -> Data {
         var body: [String: Any] = [:]
 
-        body["contents"] = request.messages.compactMap { mapMessageToJSON($0) }
+        body["contents"] = request.messages.flatMap { mapMessageToJSON($0) }
 
         if let systemPrompt = request.systemPrompt {
             body["systemInstruction"] = [
@@ -126,59 +126,90 @@ struct GeminiMapper: Sendable {
 }
 
 private extension GeminiMapper {
-    func mapMessageToJSON(_ message: Message) -> [String: Any]? {
-        guard message.role != .system else { return nil }
-
-        let role: String
-        switch message.role {
-        case .user, .tool: role = "user"
-        case .assistant: role = "model"
-        case .system: return nil
-        }
-
-        var parts: [[String: Any]] = []
+    func mapMessageToJSON(_ message: Message) -> [[String: Any]] {
+        guard message.role != .system else { return [] }
 
         switch message.content {
+        case .text, .image:
+            let parts = plainContentParts(message.content)
+            return parts.isEmpty ? [] : [["role": role(for: message.role), "parts": parts]]
+
+        case .toolCalls(let calls):
+            return calls.isEmpty ? [] : [functionCallContent(leadingParts: [], calls: calls)]
+
+        case .toolResults(let results):
+            return results.isEmpty ? [] : [functionResponseContent(results: results)]
+
+        case .mixed(let parts):
+            return mapMixedContentToJSON(parts, role: message.role)
+        }
+    }
+
+    /// Gemini expects `functionCall` parts on a `model` turn and `functionResponse`
+    /// parts on a `user` turn, so a mixed turn carrying both is split in two.
+    func mapMixedContentToJSON(_ parts: [MessageContent], role messageRole: Role) -> [[String: Any]] {
+        let plain = parts.flatMap { plainContentParts($0) }
+        let calls = parts.flatMap(\.allToolCalls)
+        let results = parts.flatMap(\.allToolResults)
+
+        var contents: [[String: Any]] = []
+        if !results.isEmpty {
+            contents.append(functionResponseContent(
+                results: results,
+                trailingParts: calls.isEmpty ? plain : []
+            ))
+        }
+        if !calls.isEmpty {
+            contents.append(functionCallContent(leadingParts: plain, calls: calls))
+        } else if results.isEmpty, !plain.isEmpty {
+            contents.append(["role": role(for: messageRole), "parts": plain])
+        }
+        return contents
+    }
+
+    /// Text and image parts only — tool parts are placed by the caller, which has
+    /// to control the turn role they land on.
+    func plainContentParts(_ content: MessageContent) -> [[String: Any]] {
+        switch content {
         case .text(let text):
-            parts.append(["text": text])
+            return [["text": text]]
+        case .image(.base64(let data, let mimeType)):
+            return [["inlineData": ["mimeType": mimeType, "data": data]]]
+        case .image(.url):
+            return []
+        case .mixed(let parts):
+            return parts.flatMap { plainContentParts($0) }
+        case .toolCalls, .toolResults:
+            return []
+        }
+    }
 
-        case .image(let source):
-            switch source {
-            case .base64(let data, let mimeType):
-                parts.append(["inlineData": ["mimeType": mimeType, "data": data]])
-            case .url:
-                break
-            }
+    func functionCallContent(leadingParts: [[String: Any]], calls: [ToolCall]) -> [String: Any] {
+        let callParts: [[String: Any]] = calls.map { call in
+            ["functionCall": ["name": call.name, "args": call.arguments.foundationObject]]
+        }
+        return ["role": "model", "parts": leadingParts + callParts]
+    }
 
-        case .toolCall(let call):
-            var args: [String: Any] = [:]
-            if let argData = try? JSONEncoder().encode(call.arguments),
-               let argObj = try? JSONSerialization.jsonObject(with: argData) {
-                args = argObj as? [String: Any] ?? [:]
-            }
-            parts.append(["functionCall": ["name": call.name, "args": args]])
-
-        case .toolResult(let result):
-            parts.append(["functionResponse": [
+    func functionResponseContent(
+        results: [ToolResult],
+        trailingParts: [[String: Any]] = []
+    ) -> [String: Any] {
+        let responseParts: [[String: Any]] = results.map { result in
+            // Gemini correlates a response to its call by function name, not call id.
+            ["functionResponse": [
                 "name": result.name ?? result.toolCallId,
                 "response": ["result": result.content],
-            ]])
-
-        case .mixed(let contentParts):
-            for part in contentParts {
-                switch part {
-                case .text(let text):
-                    parts.append(["text": text])
-                case .image(.base64(let data, let mimeType)):
-                    parts.append(["inlineData": ["mimeType": mimeType, "data": data]])
-                default:
-                    break
-                }
-            }
+            ]]
         }
+        return ["role": "user", "parts": responseParts + trailingParts]
+    }
 
-        guard !parts.isEmpty else { return nil }
-        return ["role": role, "parts": parts]
+    func role(for role: Role) -> String {
+        switch role {
+        case .assistant: "model"
+        case .user, .tool, .system: "user"
+        }
     }
 
     func mapToolToJSON(_ tool: ToolDefinition) -> [String: Any] {

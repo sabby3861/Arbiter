@@ -159,16 +159,63 @@ private extension OpenAIMapper {
             let contentParts = buildImageContentParts(source)
             return [["role": role, "content": contentParts]]
 
-        case .toolCall(let call):
-            return [["role": "assistant", "tool_calls": [mapToolCallToJSON(call)]]]
+        case .toolCalls(let calls):
+            return calls.isEmpty ? [] : [assistantToolCallMessage(content: nil, calls: calls)]
 
-        case .toolResult(let result):
-            return [["role": "tool", "tool_call_id": result.toolCallId, "content": result.content]]
+        case .toolResults(let results):
+            return results.map { toolResultMessage($0) }
 
         case .mixed(let parts):
-            let contentParts = parts.compactMap { mapContentPartToJSON($0) }
-            return [["role": role, "content": contentParts]]
+            return mapMixedContentToJSON(parts, role: role)
         }
+    }
+
+    /// OpenAI carries text and tool calls on one assistant message, but each tool
+    /// result on its own `role: "tool"` message — so a mixed turn fans out.
+    ///
+    /// Results come first: they answer the preceding assistant `tool_calls` turn and
+    /// must not be separated from it. A turn containing tool calls is emitted as
+    /// `assistant` whatever role the caller gave it, since only an assistant message
+    /// may carry `tool_calls`.
+    func mapMixedContentToJSON(_ parts: [MessageContent], role: String) -> [[String: Any]] {
+        let contentParts = flattenedContentParts(parts)
+        let calls = parts.flatMap(\.allToolCalls)
+        let results = parts.flatMap(\.allToolResults)
+
+        var messages: [[String: Any]] = results.map { toolResultMessage($0) }
+        if !calls.isEmpty {
+            messages.append(assistantToolCallMessage(content: contentParts, calls: calls))
+        } else if !contentParts.isEmpty {
+            messages.append(["role": role, "content": contentParts])
+        }
+        return messages
+    }
+
+    func flattenedContentParts(_ parts: [MessageContent]) -> [[String: Any]] {
+        parts.flatMap { part -> [[String: Any]] in
+            switch part {
+            case .mixed(let nested): flattenedContentParts(nested)
+            default: [mapContentPartToJSON(part)].compactMap { $0 }
+            }
+        }
+    }
+
+    func assistantToolCallMessage(content: [[String: Any]]?, calls: [ToolCall]) -> [String: Any] {
+        var message: [String: Any] = [
+            "role": "assistant",
+            "tool_calls": calls.map { mapToolCallToJSON($0) },
+        ]
+        // OpenAI wants the key present; null when the turn is tool calls only.
+        if let content, !content.isEmpty {
+            message["content"] = content
+        } else {
+            message["content"] = NSNull()
+        }
+        return message
+    }
+
+    func toolResultMessage(_ result: ToolResult) -> [String: Any] {
+        ["role": "tool", "tool_call_id": result.toolCallId, "content": result.content]
     }
 
     func buildImageContentParts(_ source: ImageSource) -> [[String: Any]] {
