@@ -14,6 +14,10 @@
 
 Arbiter is a unified AI runtime for Swift that lets you call any AI provider through a single, consistent interface. Write your AI code once, then swap providers — or run them all simultaneously with intelligent routing.
 
+> **What's actually shipped?** [Documentation/FEATURE_STATUS.md](Documentation/FEATURE_STATUS.md)
+> lists every feature as Shipped / Partial / Planned with the source file and the
+> test that backs it.
+
 ## Quick Start
 
 ```swift
@@ -72,6 +76,12 @@ try await session.send("What is SwiftUI?", using: ai)
 // session.messages is @Observable — your UI updates automatically
 ```
 
+> **Note:** when a turn is routed to Apple Foundation Models, only the latest user
+> message is sent — conversation history is not yet forwarded to the on-device
+> model. Text history reaches every other provider; tool-call turns and image-URL
+> messages are dropped by some mappers, and MLX keeps text turns only. See
+> [Feature Status](Documentation/FEATURE_STATUS.md).
+
 ## Structured Output
 
 Generate typed Swift values directly — no manual JSON parsing:
@@ -103,6 +113,15 @@ let analysis: SentimentResult = try await session.send(
     using: ai
 )
 ```
+
+**How it works today:** this is *prompt-based* JSON, not schema-constrained
+decoding. Arbiter asks the model for JSON (setting the provider's JSON mode where
+one exists), describes the shape in the prompt — using your `example` value when
+you pass one — then strips any markdown fences and decodes the reply with
+`JSONDecoder`. A malformed reply surfaces as `ArbiterError.decodingFailed` with the
+raw content attached. Provider-native constrained decoding (OpenAI strict schemas,
+Gemini `responseSchema`, Apple's `@Generable`) is not wired up yet, so passing an
+example is the most reliable option for complex types.
 
 ## Intelligent Routing
 
@@ -299,12 +318,33 @@ let ai = Arbiter {
 
 | Provider | Status | Privacy | Capabilities |
 |----------|--------|---------|--------------|
-| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
-| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
-| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision |
+| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision |
+| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision |
 | Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
 | MLX | ✅ Ready | On-Device | Chat, Code, Summarization |
-| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization, Tools |
+| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization |
+
+> **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
+> (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
+> non-streaming responses into `response.toolCalls`. That is a passthrough, not a
+> feature-complete tool stack: there is no execution loop, tool calls are not yet
+> surfaced while streaming, and replaying a tool call plus its result back into
+> history is not yet correct on every provider. Ollama, MLX and Apple Foundation
+> Models report `supportsToolCalling == false`. See
+> [Feature Status](Documentation/FEATURE_STATUS.md) for the per-provider detail
+> and [Tool Calling Guide](Documentation/ToolCallingGuide.md) for the manual
+> handling pattern that does work today.
+>
+> **On vision:** base64 image input is mapped to each provider's format. Image
+> *URLs* are passed straight through to OpenAI (which fetches them itself) but are
+> dropped by Anthropic, Gemini and Ollama, which need base64. None of the image
+> mapping paths has a test yet, so treat the Vision column as implemented but
+> unverified — see [Feature Status](Documentation/FEATURE_STATUS.md).
+>
+> **✅ Ready** means the provider is implemented and wired into routing, not that
+> every capability in its row is test-covered; Feature Status has the per-feature
+> evidence.
 
 ## On-Device Providers
 
@@ -444,6 +484,10 @@ let cache = ResponseCache(maxEntries: 500, ttl: .seconds(300))
 let diskCache = ResponseCache(maxEntries: 1000, ttl: .seconds(600), persistence: .disk)
 ```
 
+`ResponseCache` is a standalone component you look up and populate yourself — it is
+not yet wired into `Arbiter`'s request path, so configuring one does not
+automatically cache anything.
+
 ### Usage Analytics
 
 Cross-session usage tracking with SwiftUI binding:
@@ -478,7 +522,7 @@ MLX support is included as an optional dependency — it compiles only on macOS 
 
 ## Requirements
 
-- Swift 6.0+
+- Swift 6.1+ (the package declares `swift-tools-version: 6.1`)
 - iOS 17+ / macOS 14+ / visionOS 1+
 - Xcode 16+
 - MLX provider: Apple Silicon (M1+) with 4GB+ RAM
@@ -498,7 +542,9 @@ to ensure they never leave the device. The smart router enforces this.
 are reached, Arbiter falls back to free on-device providers automatically.
 
 **PII detection**: Optional prompt scanning catches email addresses, phone
-numbers, and other patterns before they reach cloud APIs.
+numbers, US Social Security numbers and credit-card numbers before they reach
+cloud APIs. Detection is pattern-based — names, addresses and health terms are
+not detected yet, so treat it as a safety net, not a guarantee.
 
 **Redacted logging**: API keys and sensitive headers are automatically
 redacted in all log output.
@@ -536,7 +582,18 @@ API docs are available via DocC:
 swift package generate-documentation
 ```
 
+Guides: [Getting Started](Documentation/GettingStarted.md) ·
+[Providers](Documentation/ProviderGuide.md) ·
+[Routing](Documentation/RoutingGuide.md) ·
+[Security](Documentation/SecurityGuide.md) ·
+[Tool Calling](Documentation/ToolCallingGuide.md) ·
+[Feature Status](Documentation/FEATURE_STATUS.md)
+
 ## Roadmap
+
+Checked items are implemented; see
+[Feature Status](Documentation/FEATURE_STATUS.md) for the test evidence behind each
+one and for the known gaps.
 
 - [x] Core protocol layer
 - [x] Anthropic Claude provider
@@ -544,37 +601,37 @@ swift package generate-documentation
 - [x] Google Gemini provider
 - [x] Ollama local provider
 - [x] Streaming (SSE + NDJSON)
-- [x] Tool calling / function calling
-- [x] Conversation session management
+- [x] Tool definitions passthrough (no execution loop yet)
+- [x] Conversation session management *(history is not yet sent to Apple Foundation Models)*
 - [x] Spending guards with budget enforcement
 - [x] Keychain-based secure key storage
 - [x] Smart Router with multi-factor scoring
-- [x] Privacy Guard with PII detection
+- [x] Privacy Guard with PII detection (email, phone, SSN, credit card)
 - [x] Cost tracking per provider
 - [x] Fallback chain with automatic retry
 - [x] Environment-aware routing (connectivity, thermal, budget)
 - [x] MLX on-device provider
 - [x] Apple Foundation Models provider
 - [x] SwiftUI components (ChatView, ProviderPicker, UsageDashboard, RoutingDebugView)
-- [x] Middleware pipeline (logging, sanitization, caching)
+- [x] Middleware pipeline (logging, sanitization)
 - [x] Usage analytics with cross-session persistence
-- [x] Lifecycle management for on-device providers
+- [x] Lifecycle management for on-device providers *(no dedicated test yet)*
 - [x] Security documentation and proxy architecture guide
-- [x] Structured output (typed Codable responses)
+- [x] Structured output (typed Codable responses, prompt-based JSON — not schema-constrained)
 - [x] Request intelligence engine (complexity, task detection, cost estimation)
 - [x] Adaptive routing (learns from usage patterns)
 - [x] Pre-request cost estimation API
-- [x] Per-request timeout configuration
+- [x] Per-request timeout configuration *(no dedicated test yet)*
 - [x] Configurable retry engine
-- [x] Disk-backed response cache
-- [x] Provider health monitoring
+- [x] Disk-backed response cache *(standalone component — not yet wired into the request path)*
+- [x] Provider health monitoring *(no dedicated test yet)*
 - [x] Tool calling documentation
 - [x] Response quality validation
 - [x] Token budget planning
 - [ ] v0.2 — MCP client support
 - [ ] v0.2 — Certificate pinning for cloud providers
 - [ ] v0.3 — Conversation persistence
-- [ ] v0.3 — Function calling abstraction
+- [ ] v0.3 — Tool execution loop (run tools and feed results back automatically)
 
 ## Contributing
 
