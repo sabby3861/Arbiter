@@ -20,7 +20,7 @@ enum MLXChatText {
         switch content {
         case .text(let text):
             return [text]
-        case .image:
+        case .image, .document:
             return []
         case .toolCalls(let calls):
             return calls.map { render($0) }

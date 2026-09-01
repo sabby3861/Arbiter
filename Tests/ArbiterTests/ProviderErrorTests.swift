@@ -106,10 +106,10 @@ struct ProviderErrorTests {
     }
 
     @Test func anthropicMaxTokensStopReason() throws {
-        let mapper = AnthropicMapper(defaultModel: .claude4Sonnet)
+        let mapper = AnthropicMapper(defaultModel: .claudeSonnet5)
         let responseJSON: [String: Any] = [
             "id": "msg-123",
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-5",
             "content": [["type": "text", "text": "Truncated"]],
             "stop_reason": "max_tokens",
             "usage": ["input_tokens": 10, "output_tokens": 1024],
@@ -121,10 +121,10 @@ struct ProviderErrorTests {
     }
 
     @Test func anthropicToolUseStopReason() throws {
-        let mapper = AnthropicMapper(defaultModel: .claude4Sonnet)
+        let mapper = AnthropicMapper(defaultModel: .claudeSonnet5)
         let responseJSON: [String: Any] = [
             "id": "msg-tool",
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-5",
             "content": [
                 [
                     "type": "tool_use",

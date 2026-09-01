@@ -130,7 +130,7 @@ private extension GeminiMapper {
         guard message.role != .system else { return [] }
 
         switch message.content {
-        case .text, .image:
+        case .text, .image, .document:
             let parts = plainContentParts(message.content)
             return parts.isEmpty ? [] : [["role": role(for: message.role), "parts": parts]]
 
@@ -176,6 +176,10 @@ private extension GeminiMapper {
         case .image(.base64(let data, let mimeType)):
             return [["inlineData": ["mimeType": mimeType, "data": data]]]
         case .image(.url):
+            return []
+        case .document:
+            // Document input is not mapped for this provider yet.
+            logger.error("Dropping document content: unsupported by this provider")
             return []
         case .mixed(let parts):
             return parts.flatMap { plainContentParts($0) }

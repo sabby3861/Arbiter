@@ -46,6 +46,7 @@ public enum Role: String, Sendable, Codable, Hashable {
 public enum MessageContent: Sendable, Equatable {
     case text(String)
     case image(ImageSource)
+    case document(DocumentSource)
     case toolCalls([ToolCall])
     case toolResults([ToolResult])
     case mixed([MessageContent])
@@ -90,6 +91,16 @@ public enum MessageContent: Sendable, Equatable {
         default: []
         }
     }
+
+    /// Every document carried by this content, including those nested in `.mixed`,
+    /// in the order they appear.
+    public var allDocuments: [DocumentSource] {
+        switch self {
+        case .document(let source): [source]
+        case .mixed(let parts): parts.flatMap(\.allDocuments)
+        default: []
+        }
+    }
 }
 
 public extension MessageContent {
@@ -110,6 +121,33 @@ public extension MessageContent {
 public enum ImageSource: Sendable, Equatable, Codable {
     case url(URL)
     case base64(data: String, mimeType: String)
+}
+
+/// A document attached to a message, sent inline as base64.
+///
+/// Providers that support document input read the whole file (Anthropic
+/// accepts PDFs this way); providers that do not will drop the content.
+public struct DocumentSource: Sendable, Equatable, Codable {
+    /// Base64-encoded file bytes, without newlines.
+    public let data: String
+    /// IANA media type of `data`.
+    public let mimeType: String
+    /// Optional title, used by providers when attributing citations.
+    public let title: String?
+    /// Whether the model should cite this document in its answer.
+    public let enableCitations: Bool
+
+    public init(
+        base64 data: String,
+        mimeType: String = "application/pdf",
+        title: String? = nil,
+        enableCitations: Bool = false
+    ) {
+        self.data = data
+        self.mimeType = mimeType
+        self.title = title
+        self.enableCitations = enableCitations
+    }
 }
 
 /// A request from the model to call a tool
@@ -155,7 +193,7 @@ public struct ToolDefinition: Sendable, Equatable, Codable {
 
 extension MessageContent: Codable {
     enum CodingKeys: String, CodingKey {
-        case type, text, image, toolCall, toolResult, toolCalls, toolResults, parts
+        case type, text, image, document, toolCall, toolResult, toolCalls, toolResults, parts
     }
 
     public init(from decoder: Decoder) throws {
@@ -166,6 +204,8 @@ extension MessageContent: Codable {
             self = .text(try container.decode(String.self, forKey: .text))
         case "image":
             self = .image(try container.decode(ImageSource.self, forKey: .image))
+        case "document":
+            self = .document(try container.decode(DocumentSource.self, forKey: .document))
         case "toolCalls":
             self = .toolCalls(try container.decode([ToolCall].self, forKey: .toolCalls))
         case "toolResults":
@@ -194,6 +234,9 @@ extension MessageContent: Codable {
         case .image(let source):
             try container.encode("image", forKey: .type)
             try container.encode(source, forKey: .image)
+        case .document(let source):
+            try container.encode("document", forKey: .type)
+            try container.encode(source, forKey: .document)
         case .toolCalls(let calls):
             try container.encode("toolCalls", forKey: .type)
             try container.encode(calls, forKey: .toolCalls)

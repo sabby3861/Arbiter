@@ -6,6 +6,15 @@ import os
 
 private let logger = Logger(subsystem: "com.arbiter", category: "AnthropicProvider")
 
+/// Parses the HTTP-date form of `Retry-After` (RFC 9110 IMF-fixdate).
+private let retryAfterDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+    return formatter
+}()
+
 /// Anthropic Claude API provider
 public struct AnthropicProvider: AIProvider, Sendable {
     public let id: ProviderID = .anthropic
@@ -21,6 +30,7 @@ public struct AnthropicProvider: AIProvider, Sendable {
     private let defaultModel: AnthropicModel
     private let mapper: AnthropicMapper
     private let session: URLSession
+    private let imageResolver: AnthropicImageResolver
 
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(
@@ -53,7 +63,7 @@ public struct AnthropicProvider: AIProvider, Sendable {
     public init(
         keyStorage provider: ProviderID = .anthropic,
         baseURL: URL? = nil,
-        defaultModel: AnthropicModel = .claude4Sonnet
+        defaultModel: AnthropicModel = .claudeSonnet5
     ) throws {
         let key = try SecureKeyStorage.retrieve(forProvider: provider)
         self.init(resolvedKey: key, baseURL: baseURL, defaultModel: defaultModel)
@@ -70,12 +80,14 @@ public struct AnthropicProvider: AIProvider, Sendable {
     public init(
         apiKey: String,
         baseURL: URL? = nil,
-        defaultModel: AnthropicModel = .claude4Sonnet
+        defaultModel: AnthropicModel = .claudeSonnet5
     ) {
         self.init(resolvedKey: apiKey, baseURL: baseURL, defaultModel: defaultModel)
     }
 
-    private init(
+    /// Shared designated initialiser. Internal so tests can build a provider
+    /// without going through the Keychain or the deprecated key initialiser.
+    init(
         resolvedKey: String,
         baseURL: URL?,
         defaultModel: AnthropicModel
@@ -88,12 +100,15 @@ public struct AnthropicProvider: AIProvider, Sendable {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 300
-        self.session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration)
+        self.session = session
+        self.imageResolver = AnthropicImageResolver(session: session)
     }
 
     public func generate(_ request: AIRequest) async throws -> AIResponse {
         try Task.checkCancellation()
-        let urlRequest = try buildURLRequest(for: request, stream: false)
+        let resolved = try await imageResolver.resolvingImages(in: request)
+        let urlRequest = try buildURLRequest(for: resolved, stream: false)
 
         let responseData: Data
         let httpResponse: HTTPURLResponse
@@ -136,12 +151,13 @@ public struct AnthropicProvider: AIProvider, Sendable {
     }
 }
 
-private extension AnthropicProvider {
+extension AnthropicProvider {
     func performStream(
         for request: AIRequest,
         continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
     ) async throws {
-        let urlRequest = try buildURLRequest(for: request, stream: true)
+        let resolved = try await imageResolver.resolvingImages(in: request)
+        let urlRequest = try buildURLRequest(for: resolved, stream: true)
         let (bytes, response) = try await session.bytes(for: urlRequest)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -151,7 +167,7 @@ private extension AnthropicProvider {
         guard (200...299).contains(httpResponse.statusCode) else {
             var body = ""
             for try await line in bytes.lines { body += line }
-            throw mapHTTPError(statusCode: httpResponse.statusCode, body: body)
+            throw mapHTTPError(response: httpResponse, body: body)
         }
 
         try await parseSSEStream(bytes: bytes, continuation: continuation)
@@ -161,8 +177,7 @@ private extension AnthropicProvider {
         bytes: URLSession.AsyncBytes,
         continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
     ) async throws {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
@@ -171,10 +186,7 @@ private extension AnthropicProvider {
             guard trimmedLine.hasPrefix("data: ") else { continue }
             let eventData = String(trimmedLine.dropFirst(6))
 
-            if let chunk = mapper.parseStreamEvent(
-                eventData, accumulated: &accumulated,
-                streamInputTokens: &streamInputTokens
-            ) {
+            if let chunk = mapper.parseStreamEvent(eventData, state: &state) {
                 continuation.yield(chunk)
             }
         }
@@ -199,25 +211,54 @@ private extension AnthropicProvider {
     func validateHTTPResponse(_ response: HTTPURLResponse, body: Data) throws {
         guard (200...299).contains(response.statusCode) else {
             let bodyString = String(data: body, encoding: .utf8) ?? ""
-            throw mapHTTPError(statusCode: response.statusCode, body: bodyString)
+            throw mapHTTPError(response: response, body: bodyString)
         }
     }
 
-    func mapHTTPError(statusCode: Int, body: String) -> ArbiterError {
+    func mapHTTPError(response: HTTPURLResponse, body: String) -> ArbiterError {
+        mapHTTPError(
+            statusCode: response.statusCode,
+            retryAfterHeader: response.value(forHTTPHeaderField: "Retry-After"),
+            body: body
+        )
+    }
+
+    func mapHTTPError(statusCode: Int, retryAfterHeader: String?, body: String) -> ArbiterError {
         logger.warning("HTTP error \(statusCode) from Anthropic API")
 
         switch statusCode {
         case 401:
             return .authenticationFailed(.anthropic)
         case 429:
-            return .rateLimited(.anthropic, retryAfter: nil)
+            return .rateLimited(.anthropic, retryAfter: Self.parseRetryAfter(retryAfterHeader))
         case 400:
             return .invalidRequest(reason: extractErrorMessage(from: body))
         case 404:
             return .modelNotFound(extractErrorMessage(from: body))
+        case 529:
+            // Anthropic's "overloaded" status: the request is fine, the
+            // service is momentarily saturated, so it is worth retrying.
+            return .overloaded(.anthropic)
         default:
             return .httpError(statusCode: statusCode, body: redactSensitiveContent(body))
         }
+    }
+
+    /// Parse a `Retry-After` header value.
+    ///
+    /// Anthropic sends the delay in seconds; the HTTP-date form is also
+    /// accepted so a proxy that rewrites the header still yields a delay.
+    static func parseRetryAfter(_ header: String?) -> Duration? {
+        guard let header else { return nil }
+        let trimmed = header.trimmingCharacters(in: .whitespaces)
+        if let seconds = Double(trimmed) {
+            // A zero delay is the server saying "retry now" — distinct from
+            // sending no guidance at all, which leaves the backoff in charge.
+            return seconds >= 0 ? .milliseconds(Int(seconds * 1000)) : nil
+        }
+        guard let date = retryAfterDateFormatter.date(from: trimmed) else { return nil }
+        let interval = date.timeIntervalSinceNow
+        return interval > 0 ? .milliseconds(Int(interval * 1000)) : nil
     }
 
     func extractErrorMessage(from body: String) -> String {

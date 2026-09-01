@@ -16,6 +16,22 @@ struct ResponseCacheTests {
         )
     }
 
+    /// Provider options change what the model does, so a thinking request must
+    /// not be served a response generated without thinking.
+    @Test("Provider options are part of the cache key")
+    func providerOptionsSeparateEntries() async {
+        let cache = ResponseCache(maxEntries: 100, ttl: .seconds(60))
+        let plain = AIRequest.chat("Hello")
+        let thinking = plain.withProviderOptions(
+            AnthropicOptions.adaptiveThinking(), for: .anthropic
+        )
+
+        await cache.set(request: plain, provider: .anthropic, response: makeResponse(content: "plain"))
+
+        #expect(await cache.get(request: plain, provider: .anthropic)?.content == "plain")
+        #expect(await cache.get(request: thinking, provider: .anthropic) == nil)
+    }
+
     @Test("Cache hit returns stored response")
     func cacheHit() async {
         let cache = ResponseCache(maxEntries: 100, ttl: .seconds(60))

@@ -12,7 +12,7 @@ Evidence cites the implementing source file and the test that exercises it. Test
 [swift-testing](https://github.com/swiftlang/swift-testing); a test is named either by its
 function name or, where the suite uses display names, by the string in `@Test("…")`.
 
-Last verified: 1 Sep 2026 · branch `fix/audit-v2` · `swift build && swift test` green (436 tests in 40 suites).
+Last verified: 1 Sep 2026 · branch `fix/audit-v2` · `swift build && swift test` green (538 tests in 58 suites).
 
 ---
 
@@ -21,9 +21,13 @@ Last verified: 1 Sep 2026 · branch `fix/audit-v2` · `swift build && swift test
 | Feature | Status | Evidence (file + test name) |
 |---|---|---|
 | Anthropic — chat, code, summarization, translation | Shipped | `Providers/Anthropic/AnthropicProvider.swift`, `AnthropicMapper.swift` — `AnthropicMapperTests/buildSimpleRequestBody`, `parseSuccessResponse`, `buildMultiTurnRequest` |
-| Anthropic — streaming (SSE) | Shipped | `AnthropicMapper.parseStreamEvent` — `AnthropicMapperTests/parseStreamContentDelta`, `parseStreamAccumulation`, `parseStreamMessageDeltaWithUsage` |
-| Anthropic — vision (image input) | Partial | `AnthropicMapper.imageContentBlock` maps `.base64` only; `.url` images return `nil` and are dropped from the request. No image mapping test. |
-| Anthropic — tool calling | Partial | Tool definitions are sent (`AnthropicMapperTests/buildRequestWithTools`) and `tool_use` blocks are parsed from non-streaming responses (`parseResponseWithToolUse`). `mapMessageToJSON` returns `nil` for `.toolCall`, so assistant tool-use turns are dropped when replaying history; streaming ignores `input_json_delta`. No round-trip test. |
+| Anthropic — streaming (SSE) | Shipped | `AnthropicMapper.parseStreamEvent` — `AnthropicMapperTests/parseStreamContentDelta`, `parseStreamAccumulation`, `parseStreamMessageDeltaWithUsage`; streamed tool calls in `Anthropic — streaming tool input/streamedToolCallSurfacesWithParsedArguments` |
+| Anthropic — vision (image input) | Shipped | `AnthropicMapper.imageContentBlock` maps `.base64`; `AnthropicImageResolver` downloads `.url` images and inlines them, rejecting oversized or unsupported files — `Anthropic — URL image resolution/urlImagesAreDownloadedAndInlined`, `inlinedImagesReachTheRequestBody`, `oversizedImagesAreRejected` |
+| Anthropic — tool calling | Partial | Definitions sent (`AnthropicMapperTests/buildRequestWithTools`); parallel `tool_use` blocks parsed (`parseResponseWithToolUse`); multi-round history replays with results merged into one user turn and orphan results rejected (`Anthropic — tool history/multiRoundToolConversationReplays`, `resultsFromSeparateTurnsMergeIntoOneUserMessage`, `toolResultWithoutPrecedingCallIsRejected`); streamed `input_json_delta` arguments surface as completed calls (`Anthropic — streaming tool input/streamedToolCallSurfacesWithParsedArguments`). Still no execution loop — the caller runs the tools. (F8) |
+| Anthropic — extended/adaptive thinking (single-turn) | Partial | The `thinking` parameter is built and validated per model, `display` is settable, and thinking text is parsed into `AIResponse.reasoning` — `Anthropic — advanced request options/adaptiveThinkingIsSentForCurrentModels`, `thinkingBudgetIsRejectedOnAdaptiveOnlyModels`, `Anthropic — review follow-ups/thinkingDisplayIsSentWhenRequested`, `Anthropic — response parsing/thinkingBlocksSurfaceAsReasoning`. **Thinking cannot be replayed:** the API requires a thinking block's opaque `signature` back unchanged on the next request of a tool-use conversation, and `MessageContent` has no case that can carry it — so thinking combined with a multi-round tool loop will be rejected on the second request. Single-turn thinking works. |
+| Anthropic — prompt caching | Shipped | `AnthropicOptions.promptCaching` places up to four `cache_control` breakpoints; cache token counts parsed into `TokenUsage` — `Anthropic — advanced request options/promptCachingMarksSystemAndRecentMessages`, `promptCachingNeverExceedsFourBreakpoints`, `Anthropic — response parsing/cacheTokenCountsAreParsed` |
+| Anthropic — document input + citations | Shipped | `.document` content maps to a base64 `document` block; `citations` blocks parsed into `AIResponse.citations` — `Anthropic — advanced request options/documentContentIsSentAsABase64DocumentBlock`, `Anthropic — response parsing/citationBlocksAreParsed` |
+| Anthropic — retry signals (429 `Retry-After`, 529) | Shipped | `AnthropicProvider.mapHTTPError` — `Anthropic — HTTP errors/retryAfterSecondsBecomeTheRetryDelay`, `overloadedStatusMapsToARetryableError` |
 | OpenAI — chat, code, summarization, translation | Shipped | `Providers/OpenAI/OpenAIProvider.swift`, `OpenAIMapper.swift` — `OpenAIMapperTests/buildSimpleRequest`, `parseSuccessResponse` |
 | OpenAI — streaming (SSE) | Shipped | `OpenAIMapper.parseStreamEvent` — `OpenAIMapperTests/parseStreamContentDelta`, `parseStreamFinishReason`, `parseStreamDoneEvent` |
 | OpenAI — vision (image input) | Partial | `OpenAIMapper.buildImageContentParts` — no image mapping test. |
@@ -120,7 +124,7 @@ Last verified: 1 Sep 2026 · branch `fix/audit-v2` · `swift build && swift test
 |---|---|---|
 | Tool-execution loop with parallel calls and approval | Planned | Roadmap F8 |
 | Native schema-constrained output per provider | Planned | Roadmap F4 (OpenAI strict), F5 (Gemini `responseSchema`), F6 (Ollama `format`), F7-D (Apple FM `DynamicGenerationSchema`) |
-| Streamed tool calls | Planned | Roadmap F3 (Anthropic), F4 (OpenAI), F5 (Gemini) |
+| Streamed tool calls | Partial | Shipped for Anthropic (`Anthropic — streaming tool input`); roadmap F4 (OpenAI), F5 (Gemini) |
 | Embeddings | Planned | Roadmap F4, F6 |
 | MCP client support | Planned | Roadmap v0.2 |
 | Certificate pinning | Planned | Roadmap v0.2 |

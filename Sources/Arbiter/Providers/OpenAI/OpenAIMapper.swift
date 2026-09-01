@@ -159,6 +159,11 @@ private extension OpenAIMapper {
             let contentParts = buildImageContentParts(source)
             return [["role": role, "content": contentParts]]
 
+        case .document:
+            // Document input is not mapped for this provider yet.
+            logger.error("Dropping document content: unsupported by this provider")
+            return []
+
         case .toolCalls(let calls):
             return calls.isEmpty ? [] : [assistantToolCallMessage(content: nil, calls: calls)]
 

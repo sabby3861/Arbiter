@@ -35,7 +35,7 @@ private enum ToolTurnFixture {
 
 @Suite("Parallel tool calls — Anthropic")
 struct AnthropicParallelToolCallTests {
-    let mapper = AnthropicMapper(defaultModel: .claude4Sonnet)
+    let mapper = AnthropicMapper(defaultModel: .claudeSonnet5)
 
     @Test func assistantTurnEmitsOneToolUseBlockPerCall() throws {
         let data = try mapper.buildRequestBody(ToolTurnFixture.request, stream: false)
@@ -94,6 +94,7 @@ struct AnthropicParallelToolCallTests {
     /// the message carrying it, whatever order the caller wrote the parts in.
     @Test func toolResultBlocksComeBeforeTextInTheSameTurn() throws {
         let request = AIRequest(messages: [
+            Message(role: .assistant, content: .toolCalls(ToolTurnFixture.calls)),
             Message(role: .user, content: .mixed([
                 .text("Here you go."),
                 .toolResults(ToolTurnFixture.results),
@@ -104,9 +105,9 @@ struct AnthropicParallelToolCallTests {
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
 
-        #expect(messages.count == 1)
-        #expect(messages[0]["role"] as? String == "user")
-        let blocks = try #require(messages[0]["content"] as? [[String: Any]])
+        #expect(messages.count == 2)
+        #expect(messages[1]["role"] as? String == "user")
+        let blocks = try #require(messages[1]["content"] as? [[String: Any]])
         #expect(blocks.map { $0["type"] as? String }
             == ["tool_result", "tool_result", "tool_result", "text"])
     }
@@ -116,6 +117,7 @@ struct AnthropicParallelToolCallTests {
     @Test func turnWithBothCallsAndResultsSplitsByRole() throws {
         let call = ToolCall(id: "call_next", name: "get_news", arguments: .object([:]))
         let request = AIRequest(messages: [
+            Message(role: .assistant, content: .toolCalls([ToolTurnFixture.calls[0]])),
             Message(role: .assistant, content: .mixed([
                 .toolResults([ToolTurnFixture.results[0]]),
                 .text("Now the news."),
@@ -127,13 +129,13 @@ struct AnthropicParallelToolCallTests {
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
 
-        #expect(messages.count == 2)
-        #expect(messages[0]["role"] as? String == "user")
-        #expect((messages[0]["content"] as? [[String: Any]])?.map { $0["type"] as? String }
+        #expect(messages.count == 3)
+        #expect(messages[1]["role"] as? String == "user")
+        #expect((messages[1]["content"] as? [[String: Any]])?.map { $0["type"] as? String }
             == ["tool_result"])
 
-        #expect(messages[1]["role"] as? String == "assistant")
-        #expect((messages[1]["content"] as? [[String: Any]])?.map { $0["type"] as? String }
+        #expect(messages[2]["role"] as? String == "assistant")
+        #expect((messages[2]["content"] as? [[String: Any]])?.map { $0["type"] as? String }
             == ["text", "tool_use"])
     }
 }
@@ -316,7 +318,7 @@ struct DegenerateToolContentTests {
         let request = AIRequest(messages: [Message(role: .assistant, content: .toolCalls([]))])
 
         let anthropic = try JSONSerialization.jsonObject(
-            with: AnthropicMapper(defaultModel: .claude4Sonnet).buildRequestBody(request, stream: false)
+            with: AnthropicMapper(defaultModel: .claudeSonnet5).buildRequestBody(request, stream: false)
         ) as? [String: Any]
         #expect((anthropic?["messages"] as? [[String: Any]])?.isEmpty == true)
 
@@ -340,7 +342,7 @@ struct DegenerateToolContentTests {
         let request = AIRequest(messages: [Message(role: .tool, content: .toolResults([]))])
 
         let anthropic = try JSONSerialization.jsonObject(
-            with: AnthropicMapper(defaultModel: .claude4Sonnet).buildRequestBody(request, stream: false)
+            with: AnthropicMapper(defaultModel: .claudeSonnet5).buildRequestBody(request, stream: false)
         ) as? [String: Any]
         #expect((anthropic?["messages"] as? [[String: Any]])?.isEmpty == true)
 
@@ -365,7 +367,7 @@ struct DegenerateToolContentTests {
         )
         let request = AIRequest(messages: [Message(role: .assistant, content: .toolCalls([call]))])
 
-        let data = try AnthropicMapper(defaultModel: .claude4Sonnet).buildRequestBody(request, stream: false)
+        let data = try AnthropicMapper(defaultModel: .claudeSonnet5).buildRequestBody(request, stream: false)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
         let blocks = try #require(messages[0]["content"] as? [[String: Any]])
@@ -381,7 +383,7 @@ struct DegenerateToolContentTests {
         let call = ToolCall(id: "call_1", name: "ping", arguments: .string("not-an-object"))
         let request = AIRequest(messages: [Message(role: .assistant, content: .toolCalls([call]))])
 
-        let data = try AnthropicMapper(defaultModel: .claude4Sonnet).buildRequestBody(request, stream: false)
+        let data = try AnthropicMapper(defaultModel: .claudeSonnet5).buildRequestBody(request, stream: false)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(json["messages"] as? [[String: Any]])
         let blocks = try #require(messages[0]["content"] as? [[String: Any]])

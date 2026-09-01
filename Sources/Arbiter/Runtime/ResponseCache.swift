@@ -208,6 +208,12 @@ private struct CacheKey: Hashable, Sendable {
                 hasher.combine(tool.name)
             }
         }
+        // Provider options change what the model does (thinking, caching), so
+        // two requests that differ only there must not share a cache entry.
+        for key in request.providerOptions.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+            hasher.combine(key)
+            hasher.combine(String(describing: request.providerOptions[key]))
+        }
         self.promptHash = hasher.finalize()
         self.provider = provider
     }

@@ -7,7 +7,7 @@ import Testing
 
 @Suite("AnthropicMapper")
 struct AnthropicMapperTests {
-    let mapper = AnthropicMapper(defaultModel: .claude4Sonnet)
+    let mapper = AnthropicMapper(defaultModel: .claudeSonnet5)
 
     @Test func buildSimpleRequestBody() throws {
         let request = AIRequest.chat("Hello, Claude!")
@@ -16,7 +16,7 @@ struct AnthropicMapperTests {
         let data = try mapper.buildRequestBody(request, stream: false)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        #expect(json["model"] as? String == "claude-sonnet-4-20250514")
+        #expect(json["model"] as? String == "claude-sonnet-5")
         #expect(json["max_tokens"] as? Int == 256)
 
         let messages = try #require(json["messages"] as? [[String: Any]])
@@ -43,8 +43,11 @@ struct AnthropicMapperTests {
         #expect(json["stream"] as? Bool == true)
     }
 
+    /// Pinned to a model that still accepts sampling parameters — current
+    /// models reject them, so the mapper drops them there instead.
     @Test func buildRequestWithTemperature() throws {
         let request = AIRequest.chat("Creative prompt")
+            .withModel(AnthropicModel.claudeHaiku45.rawValue)
             .withTemperature(0.9)
             .withTopP(0.95)
 
@@ -109,7 +112,7 @@ struct AnthropicMapperTests {
             "content": [
                 ["type": "text", "text": "Hello! How can I help you today?"],
             ],
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-5",
             "stop_reason": "end_turn",
             "usage": [
                 "input_tokens": 12,
@@ -122,7 +125,7 @@ struct AnthropicMapperTests {
 
         #expect(response.id == "msg_abc123")
         #expect(response.content == "Hello! How can I help you today?")
-        #expect(response.model == "claude-sonnet-4-20250514")
+        #expect(response.model == "claude-sonnet-5")
         #expect(response.provider == .anthropic)
         #expect(response.finishReason == .complete)
         #expect(response.usage?.inputTokens == 12)
@@ -144,7 +147,7 @@ struct AnthropicMapperTests {
                     "input": ["location": "Tokyo"],
                 ],
             ],
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-5",
             "stop_reason": "tool_use",
             "usage": ["input_tokens": 20, "output_tokens": 15],
         ]
@@ -160,22 +163,20 @@ struct AnthropicMapperTests {
     }
 
     @Test func parseStreamContentDelta() {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
         let eventData = """
         {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
         """
 
-        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk = mapper.parseStreamEvent(eventData, state: &state)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.accumulatedContent == "Hello")
         #expect(chunk?.isComplete == false)
-        #expect(accumulated == "Hello")
+        #expect(state.accumulated == "Hello")
     }
 
     @Test func parseStreamAccumulation() {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
 
         let event1 = """
         {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}
@@ -184,22 +185,23 @@ struct AnthropicMapperTests {
         {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}
         """
 
-        _ = mapper.parseStreamEvent(event1, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
-        let chunk2 = mapper.parseStreamEvent(event2, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        _ = mapper.parseStreamEvent(event1, state: &state)
+        let chunk2 = mapper.parseStreamEvent(event2, state: &state)
 
         #expect(chunk2?.delta == "world")
         #expect(chunk2?.accumulatedContent == "Hello world")
     }
 
     @Test func parseStreamMessageDeltaWithUsage() {
-        var accumulated = "Hello world"
-        var streamInputTokens: Int? = 10
+        var state = AnthropicStreamState()
+        state.accumulated = "Hello world"
+        state.inputTokens = 10
 
         let eventData = """
         {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
         """
 
-        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk = mapper.parseStreamEvent(eventData, state: &state)
         #expect(chunk?.isComplete == true)
         #expect(chunk?.accumulatedContent == "Hello world")
         #expect(chunk?.usage?.inputTokens == 10)
@@ -208,16 +210,15 @@ struct AnthropicMapperTests {
     }
 
     @Test func parseStreamMessageStartCapturesInputTokens() {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
 
         let messageStart = """
-        {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":25,"output_tokens":0}}}
+        {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":25,"output_tokens":0}}}
         """
 
-        let chunk = mapper.parseStreamEvent(messageStart, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk = mapper.parseStreamEvent(messageStart, state: &state)
         #expect(chunk == nil)
-        #expect(streamInputTokens == 25)
+        #expect(state.inputTokens == 25)
     }
 
     @Test func systemMessagesExcludedFromAPIMessages() throws {
@@ -237,38 +238,35 @@ struct AnthropicMapperTests {
     }
 
     @Test func parseStreamEventWithLeadingTrailingWhitespace() {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
         // Simulate whitespace that URLSession.AsyncBytes.lines may leave
         let eventData = "  {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}  "
 
-        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk = mapper.parseStreamEvent(eventData, state: &state)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.accumulatedContent == "Hello")
         #expect(chunk?.isComplete == false)
     }
 
     @Test func parseStreamEventEmptyDataReturnsNil() {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
 
-        let chunk1 = mapper.parseStreamEvent("", accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk1 = mapper.parseStreamEvent("", state: &state)
         #expect(chunk1 == nil)
 
-        let chunk2 = mapper.parseStreamEvent("   ", accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk2 = mapper.parseStreamEvent("   ", state: &state)
         #expect(chunk2 == nil)
 
-        #expect(accumulated == "")
+        #expect(state.accumulated == "")
     }
 
     @Test func parseStreamEventUnknownTypeReturnsNil() {
-        var accumulated = ""
-        var streamInputTokens: Int?
+        var state = AnthropicStreamState()
         let eventData = """
         {"type":"ping"}
         """
 
-        let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated, streamInputTokens: &streamInputTokens)
+        let chunk = mapper.parseStreamEvent(eventData, state: &state)
         #expect(chunk == nil)
     }
 

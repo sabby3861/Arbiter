@@ -327,20 +327,22 @@ let ai = Arbiter {
 
 > **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
-> non-streaming responses into `response.toolCalls`. That is a passthrough, not a
-> feature-complete tool stack: there is no execution loop, tool calls are not yet
-> surfaced while streaming, and replaying a tool call plus its result back into
-> history is not yet correct on every provider. Ollama, MLX and Apple Foundation
+> non-streaming responses into `response.toolCalls`. On Anthropic a full
+> multi-round conversation now replays correctly and streamed calls surface with
+> parsed arguments; on OpenAI and Gemini tool calls are still not surfaced while
+> streaming. There is no execution loop on any provider — you run the tools
+> yourself. Ollama, MLX and Apple Foundation
 > Models report `supportsToolCalling == false`. See
 > [Feature Status](Documentation/FEATURE_STATUS.md) for the per-provider detail
 > and [Tool Calling Guide](Documentation/ToolCallingGuide.md) for the manual
 > handling pattern that does work today.
 >
 > **On vision:** base64 image input is mapped to each provider's format. Image
-> *URLs* are passed straight through to OpenAI (which fetches them itself) but are
-> dropped by Anthropic, Gemini and Ollama, which need base64. None of the image
-> mapping paths has a test yet, so treat the Vision column as implemented but
-> unverified — see [Feature Status](Documentation/FEATURE_STATUS.md).
+> *URLs* are passed straight through to OpenAI (which fetches them itself) and are
+> downloaded and inlined for Anthropic (capped at 5 MB, tested); Gemini and Ollama
+> still drop them. Only the Anthropic image path has tests, so treat the other
+> Vision cells as implemented but unverified — see
+> [Feature Status](Documentation/FEATURE_STATUS.md).
 >
 > **✅ Ready** means the provider is implemented and wired into routing, not that
 > every capability in its row is test-covered; Feature Status has the per-feature

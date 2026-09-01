@@ -134,6 +134,11 @@ private extension OllamaMapper {
                 return [["role": role, "content": ""]]
             }
 
+        case .document:
+            // Document input is not mapped for this provider yet.
+            logger.error("Dropping document content: unsupported by this provider")
+            return []
+
         case .toolCalls(let calls):
             return calls.isEmpty ? [] : [assistantToolCallMessage(text: "", calls: calls)]
 

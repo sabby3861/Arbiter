@@ -8,6 +8,8 @@ public enum ArbiterError: Error, Sendable {
     case providerUnavailable(ProviderID, reason: String)
     case authenticationFailed(ProviderID)
     case rateLimited(ProviderID, retryAfter: Duration?)
+    /// The provider is temporarily overloaded (Anthropic HTTP 529). Retryable.
+    case overloaded(ProviderID)
     case networkError(underlying: any Error & Sendable)
     case timeout(ProviderID, duration: Duration)
     case modelNotFound(String)
@@ -35,6 +37,8 @@ extension ArbiterError: LocalizedError {
             } else {
                 "\(provider.displayName) rate limited"
             }
+        case .overloaded(let provider):
+            "\(provider.displayName) is temporarily overloaded"
         case .networkError(let underlying):
             "Network error: \(underlying.localizedDescription)"
         case .timeout(let provider, let duration):
@@ -74,6 +78,8 @@ extension ArbiterError: LocalizedError {
             } else {
                 "Wait a moment before retrying."
             }
+        case .overloaded:
+            "The provider is under heavy load. Retry shortly, ideally with backoff."
         case .networkError:
             "Check your internet connection and try again."
         case .timeout:

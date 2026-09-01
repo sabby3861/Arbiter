@@ -10,6 +10,13 @@ public struct AIStreamChunk: Sendable, Equatable {
     public let isComplete: Bool
     public let usage: TokenUsage?
     public let finishReason: FinishReason?
+    /// Tool calls completed by this chunk.
+    ///
+    /// Providers stream tool arguments as text fragments, so a call only
+    /// becomes available once its arguments are complete. A chunk that
+    /// finishes one call carries that call; the final chunk carries every
+    /// call made during the turn.
+    public let toolCalls: [ToolCall]?
     public let provider: ProviderID
 
     public init(
@@ -18,6 +25,7 @@ public struct AIStreamChunk: Sendable, Equatable {
         isComplete: Bool,
         usage: TokenUsage? = nil,
         finishReason: FinishReason? = nil,
+        toolCalls: [ToolCall]? = nil,
         provider: ProviderID
     ) {
         self.delta = delta
@@ -25,6 +33,7 @@ public struct AIStreamChunk: Sendable, Equatable {
         self.isComplete = isComplete
         self.usage = usage
         self.finishReason = finishReason
+        self.toolCalls = toolCalls
         self.provider = provider
     }
 }

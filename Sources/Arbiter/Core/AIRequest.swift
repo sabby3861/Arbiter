@@ -14,6 +14,12 @@ public struct AIRequest: Sendable {
     public var tools: [ToolDefinition]?
     public var responseFormat: ResponseFormat?
     public var tags: Set<RequestTag>
+    /// Provider-specific settings, keyed by the provider they configure.
+    ///
+    /// A provider reads only its own entry (e.g. `AnthropicOptions` under
+    /// `.anthropic`) and ignores the rest, so one request can carry settings
+    /// for every provider the router might send it to.
+    public var providerOptions: [ProviderID: any Sendable]
 
     public init(
         messages: [Message],
@@ -24,7 +30,8 @@ public struct AIRequest: Sendable {
         systemPrompt: String? = nil,
         tools: [ToolDefinition]? = nil,
         responseFormat: ResponseFormat? = nil,
-        tags: Set<RequestTag> = []
+        tags: Set<RequestTag> = [],
+        providerOptions: [ProviderID: any Sendable] = [:]
     ) {
         self.messages = messages
         self.model = model
@@ -35,6 +42,7 @@ public struct AIRequest: Sendable {
         self.tools = tools
         self.responseFormat = responseFormat
         self.tags = tags
+        self.providerOptions = providerOptions
     }
 
     /// Start building a chat request with a single user message
@@ -95,6 +103,15 @@ public struct AIRequest: Sendable {
     public func withTags(_ tags: Set<RequestTag>) -> AIRequest {
         var copy = self
         copy.tags = tags
+        return copy
+    }
+
+    /// Attach provider-specific settings for one provider.
+    ///
+    /// Other providers ignore the entry, so this never constrains routing.
+    public func withProviderOptions(_ options: any Sendable, for provider: ProviderID) -> AIRequest {
+        var copy = self
+        copy.providerOptions[provider] = options
         return copy
     }
 }

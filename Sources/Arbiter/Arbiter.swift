@@ -444,7 +444,8 @@ private extension Arbiter {
             systemPrompt: options?.systemPrompt,
             tools: options?.tools,
             responseFormat: options?.responseFormat,
-            tags: options?.tags ?? []
+            tags: options?.tags ?? [],
+            providerOptions: options?.providerOptions ?? [:]
         )
         if let maxTokens = spendingGuard?.effectiveMaxTokens, request.maxTokens == nil {
             request.maxTokens = maxTokens
@@ -475,11 +476,12 @@ private extension Arbiter {
     }
 
     func estimateCost(usage: TokenUsage, provider: any AIProvider) -> Double {
-        let inputCost = (provider.capabilities.costPerMillionInputTokens ?? 0)
-            / 1_000_000 * Double(usage.inputTokens)
-        let outputCost = (provider.capabilities.costPerMillionOutputTokens ?? 0)
-            / 1_000_000 * Double(usage.outputTokens)
-        return inputCost + outputCost
+        // Cached tokens bill on top of `inputTokens`; ignoring them would let a
+        // cache-heavy workload run past its budget unnoticed.
+        usage.cost(
+            inputPerMillion: provider.capabilities.costPerMillionInputTokens,
+            outputPerMillion: provider.capabilities.costPerMillionOutputTokens
+        )
     }
 
     func streamWithProviderSelection(
@@ -607,6 +609,9 @@ public struct RequestOptions: Sendable {
     public var privacyRequired: Bool
     public var tags: Set<RequestTag>
     public var timeout: Duration?
+    /// Provider-specific settings, keyed by the provider they configure.
+    /// See `AIRequest.providerOptions`.
+    public var providerOptions: [ProviderID: any Sendable]
 
     public init(
         model: String? = nil,
@@ -618,7 +623,8 @@ public struct RequestOptions: Sendable {
         provider: ProviderID? = nil,
         privacyRequired: Bool = false,
         tags: Set<RequestTag> = [],
-        timeout: Duration? = nil
+        timeout: Duration? = nil,
+        providerOptions: [ProviderID: any Sendable] = [:]
     ) {
         self.model = model
         self.maxTokens = maxTokens
@@ -630,6 +636,7 @@ public struct RequestOptions: Sendable {
         self.privacyRequired = privacyRequired
         self.tags = tags
         self.timeout = timeout
+        self.providerOptions = providerOptions
     }
 }
 
