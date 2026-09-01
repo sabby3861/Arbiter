@@ -119,9 +119,10 @@ decoding. Arbiter asks the model for JSON (setting the provider's JSON mode wher
 one exists), describes the shape in the prompt — using your `example` value when
 you pass one — then strips any markdown fences and decodes the reply with
 `JSONDecoder`. A malformed reply surfaces as `ArbiterError.decodingFailed` with the
-raw content attached. Provider-native constrained decoding (OpenAI strict schemas,
-Gemini `responseSchema`, Apple's `@Generable`) is not wired up yet, so passing an
-example is the most reliable option for complex types.
+raw content attached. `generate(_:as:)` does not yet route through provider-native
+constrained decoding, so passing an example is the most reliable option for complex
+types. Passing `ResponseFormat.structured(schema:)` yourself does reach OpenAI as a
+strict JSON schema; Gemini `responseSchema` and Apple's `@Generable` are still to come.
 
 ## Intelligent Routing
 
@@ -327,10 +328,11 @@ let ai = Arbiter {
 
 > **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
-> non-streaming responses into `response.toolCalls`. On Anthropic a full
-> multi-round conversation now replays correctly and streamed calls surface with
-> parsed arguments; on OpenAI and Gemini tool calls are still not surfaced while
-> streaming. There is no execution loop on any provider — you run the tools
+> non-streaming responses into `response.toolCalls`. On Anthropic and OpenAI a full
+> multi-round conversation replays correctly and streamed calls surface with parsed
+> arguments; on Gemini tool calls are still not surfaced while streaming, and
+> OpenAI's opt-in Responses transport does not stream at all. There is no execution
+> loop on any provider — you run the tools
 > yourself. Ollama, MLX and Apple Foundation
 > Models report `supportsToolCalling == false`. See
 > [Feature Status](Documentation/FEATURE_STATUS.md) for the per-provider detail

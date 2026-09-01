@@ -135,57 +135,68 @@ struct OpenAIMapperTests {
     }
 
     @Test func parseStreamContentDelta() {
-        var accumulated = ""
+        var state = OpenAIStreamState()
         let event = """
         {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
         """
 
-        let chunk = mapper.parseStreamEvent(event, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(event, state: &state)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.accumulatedContent == "Hello")
         #expect(chunk?.isComplete == false)
     }
 
     @Test func parseStreamDoneEvent() {
-        var accumulated = "Hello world"
-        let chunk = mapper.parseStreamEvent("[DONE]", accumulated: &accumulated)
+        var state = OpenAIStreamState()
+        state.accumulated = "Hello world"
+        let chunk = mapper.parseStreamEvent("[DONE]", state: &state)
         #expect(chunk?.isComplete == true)
         #expect(chunk?.accumulatedContent == "Hello world")
     }
 
-    @Test func parseStreamFinishReason() {
-        var accumulated = "Hello"
+    /// The finish_reason chunk carries the reason but must NOT end the stream:
+    /// with `stream_options.include_usage` the usage chunk still follows, and
+    /// completing here would discard the token counts.
+    @Test func parseStreamFinishReasonDoesNotEndStream() {
+        var state = OpenAIStreamState()
+        state.accumulated = "Hello"
         let event = """
         {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
         """
 
-        let chunk = mapper.parseStreamEvent(event, accumulated: &accumulated)
-        #expect(chunk?.isComplete == true)
+        let chunk = mapper.parseStreamEvent(event, state: &state)
+        #expect(chunk?.finishReason == .complete)
+        #expect(chunk?.isComplete == false)
+
+        // A host that never sends a usage chunk still terminates on [DONE],
+        // and the reason recorded above survives onto that final chunk.
+        let done = mapper.parseStreamEvent("[DONE]", state: &state)
+        #expect(done?.isComplete == true)
+        #expect(done?.finishReason == .complete)
     }
 
     @Test func parseStreamEventWithWhitespace() {
-        var accumulated = ""
+        var state = OpenAIStreamState()
         let event = "  {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}  "
 
-        let chunk = mapper.parseStreamEvent(event, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(event, state: &state)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.isComplete == false)
     }
 
     @Test func parseStreamEventEmptyDataReturnsNil() {
-        var accumulated = ""
-        #expect(mapper.parseStreamEvent("", accumulated: &accumulated) == nil)
-        #expect(mapper.parseStreamEvent("   ", accumulated: &accumulated) == nil)
+        var state = OpenAIStreamState()
+        #expect(mapper.parseStreamEvent("", state: &state) == nil)
+        #expect(mapper.parseStreamEvent("   ", state: &state) == nil)
     }
 
     @Test func parseStreamDoneWithWhitespace() {
-        var accumulated = "Hello"
-        let chunk = mapper.parseStreamEvent(" [DONE] ", accumulated: &accumulated)
-        // "[DONE]" with surrounding spaces — trimmed at provider level, but mapper
-        // receives the raw payload after "data: " is stripped. Verify it doesn't crash.
-        // The exact match for "[DONE]" won't fire here; mapper returns nil gracefully.
-        // The provider trims the line before extracting the payload, so in practice
-        // the mapper always receives clean "[DONE]".
+        var state = OpenAIStreamState()
+        state.accumulated = "Hello"
+        let chunk = mapper.parseStreamEvent(" [DONE] ", state: &state)
+        // The provider trims each line before stripping "data: ", so the mapper
+        // only ever sees a clean "[DONE]". A padded one is not recognised and is
+        // ignored rather than crashing.
         #expect(chunk == nil || chunk?.isComplete == true)
     }
 
