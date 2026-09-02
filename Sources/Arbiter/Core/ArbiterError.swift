@@ -22,6 +22,17 @@ public enum ArbiterError: Error, Sendable {
     case decodingFailed(context: String)
     case httpError(statusCode: Int, body: String)
     case keychainError(status: Int32)
+    /// The conversation no longer fits the model's context window. `limit` is the model's
+    /// own reported size, so callers can trim to a real number rather than guess.
+    case contextWindowExceeded(ProviderID, limit: Int)
+    /// The model declined to answer and explained why. Distinct from `contentFiltered`,
+    /// which is a guardrail acting on the content rather than the model's own refusal.
+    case refused(ProviderID, explanation: String)
+    /// The model does not support the request's language or locale. Not retryable — the
+    /// router should fall back to a provider that does.
+    case unsupportedLanguage(ProviderID, locale: String?)
+    /// The provider is already generating and cannot accept another call yet. Retryable.
+    case busy(ProviderID)
 }
 
 extension ArbiterError: LocalizedError {
@@ -63,6 +74,18 @@ extension ArbiterError: LocalizedError {
             "HTTP error \(statusCode)"
         case .keychainError(let status):
             "Keychain error: \(status)"
+        case .contextWindowExceeded(let provider, let limit):
+            "\(provider.displayName) context window exceeded (limit: \(limit) tokens)"
+        case .refused(let provider, let explanation):
+            "\(provider.displayName) refused to answer: \(explanation)"
+        case .unsupportedLanguage(let provider, let locale):
+            if let locale {
+                "\(provider.displayName) does not support the language or locale '\(locale)'"
+            } else {
+                "\(provider.displayName) does not support the request's language"
+            }
+        case .busy(let provider):
+            "\(provider.displayName) is already generating a response"
         }
     }
 
@@ -104,6 +127,14 @@ extension ArbiterError: LocalizedError {
             "Check the API documentation for this status code."
         case .keychainError:
             "Check Keychain access permissions for your app."
+        case .contextWindowExceeded:
+            "Shorten the conversation, or route to a provider with a larger context window."
+        case .refused:
+            "Rephrase the request, or route to a different provider."
+        case .unsupportedLanguage:
+            "Use a supported language, or route to a cloud provider."
+        case .busy:
+            "Wait for the in-flight response to finish, or use a separate conversation."
         }
     }
 }
