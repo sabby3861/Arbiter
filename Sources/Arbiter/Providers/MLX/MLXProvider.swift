@@ -236,7 +236,7 @@ private extension MLXProvider {
         }
 
         for message in request.messages {
-            guard let text = message.content.text else { continue }
+            guard let text = MLXChatText.render(message.content) else { continue }
             switch message.role {
             case .user:
                 chatMessages.append(.user(text))

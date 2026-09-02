@@ -79,3 +79,30 @@ extension JSONValue: ExpressibleByDictionaryLiteral {
         self = .object(Dictionary(elements, uniquingKeysWith: { _, last in last }))
     }
 }
+
+extension JSONValue {
+    /// A Foundation object graph suitable for `JSONSerialization`.
+    ///
+    /// Providers that build their request bodies as `[String: Any]` need tool
+    /// arguments as plain dictionaries/arrays rather than `JSONValue`.
+    var foundationValue: Any {
+        switch self {
+        case .string(let value): value
+        // JSONSerialization raises an uncatchable exception on NaN/infinity.
+        case .number(let value): value.isFinite ? value : NSNull()
+        case .bool(let value): value
+        case .null: NSNull()
+        case .array(let values): values.map(\.foundationValue)
+        case .object(let values): values.mapValues(\.foundationValue)
+        }
+    }
+
+    /// The object form of this value, or an empty object when it is not an object.
+    ///
+    /// Tool arguments are objects by contract; providers that require an object
+    /// use this to degrade gracefully instead of emitting a malformed body.
+    var foundationObject: [String: Any] {
+        guard case .object(let values) = self else { return [:] }
+        return values.mapValues(\.foundationValue)
+    }
+}

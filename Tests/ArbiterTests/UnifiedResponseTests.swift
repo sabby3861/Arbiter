@@ -11,7 +11,7 @@ struct UnifiedResponseTests {
     @Test func allProvidersProduceAIResponse() throws {
         let openAIMapper = OpenAIMapper(defaultModel: .gpt4o)
         let geminiMapper = GeminiMapper(defaultModel: .flash25)
-        let anthropicMapper = AnthropicMapper(defaultModel: .claude4Sonnet)
+        let anthropicMapper = AnthropicMapper(defaultModel: .claudeSonnet5)
         let ollamaMapper = OllamaMapper(defaultModel: "llama3.2")
 
         let openAI = try openAIMapper.parseResponse(try makeOpenAIData())
@@ -47,12 +47,11 @@ struct UnifiedResponseTests {
     @Test func allProvidersProduceStreamChunks() {
         let openAIMapper = OpenAIMapper(defaultModel: .gpt4o)
         let geminiMapper = GeminiMapper(defaultModel: .flash25)
-        let anthropicMapper = AnthropicMapper(defaultModel: .claude4Sonnet)
+        let anthropicMapper = AnthropicMapper(defaultModel: .claudeSonnet5)
         let ollamaMapper = OllamaMapper(defaultModel: "llama3.2")
 
         var accOpenAI = ""
         var accGemini = ""
-        var accAnthropic = ""
         var accOllama = ""
 
         let openAIChunk = openAIMapper.parseStreamEvent(
@@ -69,13 +68,12 @@ struct UnifiedResponseTests {
             accumulated: &accGemini
         )
 
-        var streamInputTokens: Int?
+        var anthropicState = AnthropicStreamState()
         let anthropicChunk = anthropicMapper.parseStreamEvent(
             """
             {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}
             """,
-            accumulated: &accAnthropic,
-            streamInputTokens: &streamInputTokens
+            state: &anthropicState
         )
 
         let ollamaChunk = ollamaMapper.parseStreamLine(
@@ -156,7 +154,7 @@ private func makeGeminiData() throws -> Data {
 private func makeAnthropicData() throws -> Data {
     let json: [String: Any] = [
         "id": "msg-abc",
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-5",
         "content": [["type": "text", "text": "Hello from Anthropic!"]],
         "stop_reason": "end_turn",
         "usage": ["input_tokens": 5, "output_tokens": 4],

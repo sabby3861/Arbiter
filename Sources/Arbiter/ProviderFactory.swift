@@ -23,7 +23,7 @@ public struct ProviderFactory: Sendable {
     /// Create an Anthropic provider from secure key storage
     public static func anthropic(
         from source: KeySource,
-        model: AnthropicModel = .claude4Sonnet
+        model: AnthropicModel = .claudeSonnet5
     ) -> ProviderFactory {
         ProviderFactory {
             try AnthropicProvider(keyStorage: .anthropic, defaultModel: model)

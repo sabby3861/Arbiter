@@ -38,19 +38,28 @@ public enum Role: String, Sendable, Codable, Hashable {
 }
 
 /// The payload of a message
+///
+/// A single assistant turn can carry several tool calls (models issue them in
+/// parallel), and the matching user/tool turn carries one result per call, so
+/// the tool cases hold arrays. `.mixed` may contain tool parts alongside text
+/// and images — e.g. an assistant turn that says something *and* calls tools.
 public enum MessageContent: Sendable, Equatable {
     case text(String)
     case image(ImageSource)
-    case toolCall(ToolCall)
-    case toolResult(ToolResult)
+    case document(DocumentSource)
+    case toolCalls([ToolCall])
+    case toolResults([ToolResult])
     case mixed([MessageContent])
 
     /// Extract plain text content, if available
     public var text: String? {
         switch self {
-        case .text(let string): string
-        case .toolResult(let result): result.content
-        default: nil
+        case .text(let string):
+            string
+        case .toolResults(let results):
+            results.isEmpty ? nil : results.map(\.content).joined(separator: "\n")
+        default:
+            nil
         }
     }
 
@@ -62,12 +71,83 @@ public enum MessageContent: Sendable, Equatable {
         default: false
         }
     }
+
+    /// Every tool call carried by this content, including those nested in `.mixed`,
+    /// in the order they appear.
+    public var allToolCalls: [ToolCall] {
+        switch self {
+        case .toolCalls(let calls): calls
+        case .mixed(let parts): parts.flatMap(\.allToolCalls)
+        default: []
+        }
+    }
+
+    /// Every tool result carried by this content, including those nested in `.mixed`,
+    /// in the order they appear.
+    public var allToolResults: [ToolResult] {
+        switch self {
+        case .toolResults(let results): results
+        case .mixed(let parts): parts.flatMap(\.allToolResults)
+        default: []
+        }
+    }
+
+    /// Every document carried by this content, including those nested in `.mixed`,
+    /// in the order they appear.
+    public var allDocuments: [DocumentSource] {
+        switch self {
+        case .document(let source): [source]
+        case .mixed(let parts): parts.flatMap(\.allDocuments)
+        default: []
+        }
+    }
+}
+
+public extension MessageContent {
+    /// Wraps a single call into `.toolCalls`.
+    @available(*, deprecated, message: "Use .toolCalls([call]); a turn can carry several parallel calls.")
+    static func toolCall(_ call: ToolCall) -> MessageContent {
+        .toolCalls([call])
+    }
+
+    /// Wraps a single result into `.toolResults`.
+    @available(*, deprecated, message: "Use .toolResults([result]); a turn can carry several results.")
+    static func toolResult(_ result: ToolResult) -> MessageContent {
+        .toolResults([result])
+    }
 }
 
 /// Where an image comes from
 public enum ImageSource: Sendable, Equatable, Codable {
     case url(URL)
     case base64(data: String, mimeType: String)
+}
+
+/// A document attached to a message, sent inline as base64.
+///
+/// Providers that support document input read the whole file (Anthropic
+/// accepts PDFs this way); providers that do not will drop the content.
+public struct DocumentSource: Sendable, Equatable, Codable {
+    /// Base64-encoded file bytes, without newlines.
+    public let data: String
+    /// IANA media type of `data`.
+    public let mimeType: String
+    /// Optional title, used by providers when attributing citations.
+    public let title: String?
+    /// Whether the model should cite this document in its answer.
+    public let enableCitations: Bool
+
+    public init(
+        base64 data: String,
+        mimeType: String = "application/pdf",
+        title: String? = nil,
+        enableCitations: Bool = false
+    ) {
+        self.data = data
+        self.mimeType = mimeType
+        self.title = title
+        self.enableCitations = enableCitations
+    }
 }
 
 /// A request from the model to call a tool
@@ -113,7 +193,7 @@ public struct ToolDefinition: Sendable, Equatable, Codable {
 
 extension MessageContent: Codable {
     enum CodingKeys: String, CodingKey {
-        case type, text, image, toolCall, toolResult, parts
+        case type, text, image, document, toolCall, toolResult, toolCalls, toolResults, parts
     }
 
     public init(from decoder: Decoder) throws {
@@ -124,10 +204,17 @@ extension MessageContent: Codable {
             self = .text(try container.decode(String.self, forKey: .text))
         case "image":
             self = .image(try container.decode(ImageSource.self, forKey: .image))
+        case "document":
+            self = .document(try container.decode(DocumentSource.self, forKey: .document))
+        case "toolCalls":
+            self = .toolCalls(try container.decode([ToolCall].self, forKey: .toolCalls))
+        case "toolResults":
+            self = .toolResults(try container.decode([ToolResult].self, forKey: .toolResults))
+        // Payloads written before parallel tool calls were modelled.
         case "toolCall":
-            self = .toolCall(try container.decode(ToolCall.self, forKey: .toolCall))
+            self = .toolCalls([try container.decode(ToolCall.self, forKey: .toolCall)])
         case "toolResult":
-            self = .toolResult(try container.decode(ToolResult.self, forKey: .toolResult))
+            self = .toolResults([try container.decode(ToolResult.self, forKey: .toolResult)])
         case "mixed":
             self = .mixed(try container.decode([MessageContent].self, forKey: .parts))
         default:
@@ -147,12 +234,15 @@ extension MessageContent: Codable {
         case .image(let source):
             try container.encode("image", forKey: .type)
             try container.encode(source, forKey: .image)
-        case .toolCall(let call):
-            try container.encode("toolCall", forKey: .type)
-            try container.encode(call, forKey: .toolCall)
-        case .toolResult(let result):
-            try container.encode("toolResult", forKey: .type)
-            try container.encode(result, forKey: .toolResult)
+        case .document(let source):
+            try container.encode("document", forKey: .type)
+            try container.encode(source, forKey: .document)
+        case .toolCalls(let calls):
+            try container.encode("toolCalls", forKey: .type)
+            try container.encode(calls, forKey: .toolCalls)
+        case .toolResults(let results):
+            try container.encode("toolResults", forKey: .type)
+            try container.encode(results, forKey: .toolResults)
         case .mixed(let parts):
             try container.encode("mixed", forKey: .type)
             try container.encode(parts, forKey: .parts)
