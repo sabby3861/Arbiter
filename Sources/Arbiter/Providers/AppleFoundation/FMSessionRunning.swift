@@ -19,6 +19,9 @@ struct FMGenerationSettings: Sendable, Equatable {
     var schema: FMSchemaTree?
     /// Whether the schema is also described in the prompt. Ignored without a schema.
     var includeSchemaInPrompt: Bool
+    /// Whether to measure token counts for this call. Costs several `tokenCount(for:)`
+    /// round trips over the transcript, so it is the caller's choice.
+    var reportTokenUsage: Bool
 
     /// Derives settings from the portable request fields plus provider options.
     ///
@@ -47,6 +50,7 @@ struct FMGenerationSettings: Sendable, Equatable {
         self.maximumResponseTokens = request.maxTokens
         self.schema = schema
         self.includeSchemaInPrompt = options.includeSchemaInPrompt
+        self.reportTokenUsage = options.reportTokenUsage
     }
 
     init(
@@ -54,13 +58,15 @@ struct FMGenerationSettings: Sendable, Equatable {
         temperature: Double? = nil,
         maximumResponseTokens: Int? = nil,
         schema: FMSchemaTree? = nil,
-        includeSchemaInPrompt: Bool = true
+        includeSchemaInPrompt: Bool = true,
+        reportTokenUsage: Bool = false
     ) {
         self.sampling = sampling
         self.temperature = temperature
         self.maximumResponseTokens = maximumResponseTokens
         self.schema = schema
         self.includeSchemaInPrompt = includeSchemaInPrompt
+        self.reportTokenUsage = reportTokenUsage
     }
 }
 
@@ -72,10 +78,16 @@ struct FMRunResult: Sendable, Equatable {
     /// session appended. Retrospective by nature: the calls have already been executed and
     /// answered in-session, so this is a record, not a request for the caller to act on.
     let toolCalls: [FMToolCall]
+    /// Measured token counts, when the call asked for them and the OS can supply them.
+    /// `nil` is honest: Apple reports no usage of its own, so there is nothing to fall
+    /// back on but an estimate, and an estimate presented as a measurement is worse than
+    /// none. See ``AppleFMOptions/reportTokenUsage``.
+    let usage: TokenUsage?
 
-    init(text: String, toolCalls: [FMToolCall] = []) {
+    init(text: String, toolCalls: [FMToolCall] = [], usage: TokenUsage? = nil) {
         self.text = text
         self.toolCalls = toolCalls
+        self.usage = usage
     }
 }
 
@@ -86,10 +98,14 @@ struct FMStreamSnapshot: Sendable, Equatable {
     /// Tool calls known at this point in the turn. Populated on the last snapshot, once the
     /// session's transcript shows what ran.
     let toolCalls: [FMToolCall]
+    /// Measured token counts. Like the tool calls, only knowable once the turn is over, so
+    /// this rides on the final snapshot and is `nil` on every earlier one.
+    let usage: TokenUsage?
 
-    init(content: String, toolCalls: [FMToolCall] = []) {
+    init(content: String, toolCalls: [FMToolCall] = [], usage: TokenUsage? = nil) {
         self.content = content
         self.toolCalls = toolCalls
+        self.usage = usage
     }
 }
 
@@ -117,6 +133,16 @@ protocol FMSessionRunning: Sendable {
         to prompt: String,
         settings: FMGenerationSettings
     ) -> AsyncThrowingStream<FMStreamSnapshot, Error>
+
+    /// Builds a feedback attachment describing this session's most recent response.
+    ///
+    /// Neither `async` nor `throws`, matching `LanguageModelSession.logFeedbackAttachment`:
+    /// it serialises state the session already holds and performs no generation. The
+    /// attachment is the caller's to send — Arbiter never transmits it.
+    func feedbackAttachment(
+        sentiment: AppleFMFeedbackSentiment?,
+        issues: [AppleFMFeedbackIssue]
+    ) -> Data
 }
 
 /// Builds a session over the given history. Throwing covers adapter loading, which

@@ -76,10 +76,11 @@ try await session.send("What is SwiftUI?", using: ai)
 // session.messages is @Observable — your UI updates automatically
 ```
 
-> **Note:** when a turn is routed to Apple Foundation Models, only the latest user
-> message is sent — conversation history is not yet forwarded to the on-device
-> model. Text history reaches every other provider; tool-call turns and image-URL
-> messages are dropped by some mappers, and MLX keeps text turns only. See
+> **Note:** text history reaches every provider, Apple Foundation Models included —
+> a turn routed on-device is replayed as a `Transcript`, and passing a
+> `conversationID` in `AppleFMOptions` reuses one session across turns so Apple's
+> KV cache survives. Tool-call turns and image-URL messages are still dropped by
+> some mappers, and MLX keeps text turns only. See
 > [Feature Status](Documentation/FEATURE_STATUS.md).
 
 ## Structured Output
@@ -122,7 +123,10 @@ you pass one — then strips any markdown fences and decodes the reply with
 raw content attached. `generate(_:as:)` does not yet route through provider-native
 constrained decoding, so passing an example is the most reliable option for complex
 types. Passing `ResponseFormat.structured(schema:)` yourself does reach OpenAI as a
-strict JSON schema; Gemini `responseSchema` and Apple's `@Generable` are still to come.
+strict JSON schema, and Apple Foundation Models as a `GenerationSchema` enforced by
+constrained decoding; Gemini `responseSchema` is still to come. On Apple FM you can
+also hand a Swift `@Generable` type straight to the provider's own
+`generate(_:as:)`.
 
 ## Intelligent Routing
 
@@ -324,7 +328,7 @@ let ai = Arbiter {
 | Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision |
 | Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
 | MLX | ✅ Ready | On-Device | Chat, Code, Summarization |
-| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization |
+| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization, Structured Output |
 
 > **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
@@ -333,8 +337,25 @@ let ai = Arbiter {
 > arguments; on Gemini tool calls are still not surfaced while streaming, and
 > OpenAI's opt-in Responses transport does not stream at all. There is no execution
 > loop on any provider — you run the tools
-> yourself. Ollama, MLX and Apple Foundation
-> Models report `supportsToolCalling == false`. See
+> yourself. Ollama and MLX report `supportsToolCalling == false`.
+>
+> Apple Foundation Models is the odd one out: it reports `false` too, but only
+> because the router cannot see the executors you supply. It *does* call tools —
+> bind each `ToolDefinition` to a closure in `AppleFMOptions.tools`, then bypass
+> routing with `RequestOptions(provider: .appleFoundation)`, since any request
+> carrying `tools` disqualifies a provider reporting `false`:
+>
+> ```swift
+> let reply = try await ai.generate(prompt, options: .init(
+>     provider: .appleFoundation,          // required — routing would skip it
+>     tools: [weather.definition],
+>     providerOptions: [.appleFoundation: AppleFMOptions(tools: [weather])]
+> ))
+> ```
+>
+> Apple runs the tools inside `respond()`, so the turn comes back `.complete`,
+> never `.toolCall`, and `response.toolCalls` records what already ran rather than
+> what you must run. See
 > [Feature Status](Documentation/FEATURE_STATUS.md) for the per-provider detail
 > and [Tool Calling Guide](Documentation/ToolCallingGuide.md) for the manual
 > handling pattern that does work today.
@@ -380,6 +401,25 @@ Uses Apple's built-in on-device model via the FoundationModels framework. Requir
 ```swift
 $0.system(AppleFoundationProvider())
 ```
+
+`AppleFMOptions` exposes the framework's own controls — sampling mode, use case,
+guardrails, a LoRA adapter, prewarming, on-device tool bindings, and an opt-in
+summarise-and-retry strategy for context overflow:
+
+```swift
+let options = AppleFMOptions(
+    conversationID: chat.id.uuidString,   // reuse one session across turns
+    contextOverflow: .summarizeAndRetry   // condense old turns instead of failing
+)
+let reply = try await ai.generate(prompt, options: .init(
+    providerOptions: [.appleFoundation: options]
+))
+```
+
+Errors are mapped individually rather than flattened: a full context window surfaces as
+`ArbiterError.contextWindowExceeded`, a refusal as `.refused`, an unsupported language as
+`.unsupportedLanguage`, and a busy session as `.busy` — so the router can fall back on the
+ones worth falling back on and retry the ones worth retrying.
 
 Check availability in SwiftUI:
 
@@ -606,7 +646,7 @@ one and for the known gaps.
 - [x] Ollama local provider
 - [x] Streaming (SSE + NDJSON)
 - [x] Tool definitions passthrough (no execution loop yet)
-- [x] Conversation session management *(history is not yet sent to Apple Foundation Models)*
+- [x] Conversation session management
 - [x] Spending guards with budget enforcement
 - [x] Keychain-based secure key storage
 - [x] Smart Router with multi-factor scoring
@@ -615,13 +655,13 @@ one and for the known gaps.
 - [x] Fallback chain with automatic retry
 - [x] Environment-aware routing (connectivity, thermal, budget)
 - [x] MLX on-device provider
-- [x] Apple Foundation Models provider
+- [x] Apple Foundation Models provider *(transcript history, constrained decoding, on-device tools, typed errors, measured token usage)*
 - [x] SwiftUI components (ChatView, ProviderPicker, UsageDashboard, RoutingDebugView)
 - [x] Middleware pipeline (logging, sanitization)
 - [x] Usage analytics with cross-session persistence
 - [x] Lifecycle management for on-device providers *(no dedicated test yet)*
 - [x] Security documentation and proxy architecture guide
-- [x] Structured output (typed Codable responses, prompt-based JSON — not schema-constrained)
+- [x] Structured output (typed Codable responses; schema-constrained on OpenAI and Apple Foundation Models, prompt-based JSON elsewhere)
 - [x] Request intelligence engine (complexity, task detection, cost estimation)
 - [x] Adaptive routing (learns from usage patterns)
 - [x] Pre-request cost estimation API
