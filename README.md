@@ -131,8 +131,8 @@ and nested structs — but not for a type containing an **enum**, a dictionary o
 self-reference; those fall back to the prompt path automatically, and passing an
 `example` is then the most reliable option. And because fallback can move a request
 to a provider that cannot be constrained, the form is chosen for whoever actually
-serves the request, not once up front. Gemini and Ollama take the prompt path until
-their mappers send a schema object. On Apple FM you can also hand a Swift
+serves the request, not once up front. Ollama takes the prompt path until its
+mapper sends a schema object. On Apple FM you can also hand a Swift
 `@Generable` type straight to the provider's own `generate(_:as:)`.
 
 ## Tool Execution
@@ -261,10 +261,9 @@ let estimates = await ai.estimateCost("Write a detailed essay about AI")
 for estimate in estimates {
     print("\(estimate.provider): $\(estimate.estimatedCost)")
 }
-// Anthropic: $0.0031
-// OpenAI: $0.0024
-// Gemini: $0.0012
-// MLX: $0.0000
+// One line per configured provider, priced from that provider's own
+// per-million rates against the estimated token counts. On-device
+// providers report $0.
 ```
 
 ### Three-Tier Architecture
@@ -392,10 +391,9 @@ let ai = Arbiter {
 
 > **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
-> non-streaming responses into `response.toolCalls`. On Anthropic and OpenAI a full
+> non-streaming responses into `response.toolCalls`. On all three a full
 > multi-round conversation replays correctly and streamed calls surface with parsed
-> arguments; on Gemini tool calls are still not surfaced while streaming, and
-> OpenAI's opt-in Responses transport does not stream at all. `run(_:tools:)` runs
+> arguments; OpenAI's opt-in Responses transport does not stream at all. `run(_:tools:)` runs
 > the execution loop on top of that — see [Tool Execution](#tool-execution) — so
 > you only run the tools yourself if you call `generate`/`chat` directly. Ollama and
 > MLX report `supportsToolCalling == false`.

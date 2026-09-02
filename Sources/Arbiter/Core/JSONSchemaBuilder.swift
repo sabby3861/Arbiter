@@ -11,19 +11,17 @@ import Foundation
 /// path over the prompt path, per candidate provider rather than once per request, because
 /// fallback can move a request from one to the other mid-flight.
 enum NativeStructuredOutput {
-    /// OpenAI compiles the schema into strict structured outputs, and Apple Foundation
-    /// Models into a `GenerationSchema` that drives constrained decoding on device.
+    /// OpenAI compiles the schema into strict structured outputs, Anthropic into
+    /// `output_config.format`, Gemini into `generationConfig.responseFormat.text.schema`,
+    /// and Apple Foundation Models into a `GenerationSchema` that drives constrained
+    /// decoding on device.
     ///
-    /// The absentees are absent because of Arbiter's own mappers, not the APIs. Anthropic
-    /// ships schema-constrained decoding (`output_config.format` with `type: "json_schema"`,
-    /// GA — https://platform.claude.com/docs/en/build-with-claude/structured-outputs,
-    /// checked 2 September 2026) and `AnthropicMapper` does not send it yet; Gemini's mapper
-    /// puts the schema *string* into `responseSchema`, where the API wants an object in its
-    /// own OpenAPI subset; the Ollama mapper ignores `.structured` entirely. Each joins this
-    /// set with the roadmap item that teaches its mapper to send a schema, not before —
-    /// listing a provider here replaces the prompt that works today with a request its
-    /// mapper would mangle. MLX runs an unconstrained local model and has nothing to send.
-    static let providers: Set<ProviderID> = [.openAI, .appleFoundation]
+    /// The absentees are absent because of Arbiter's own mappers, not the APIs: the Ollama
+    /// mapper ignores `.structured` entirely and joins this set with the roadmap item that
+    /// teaches it to send a schema, not before — listing a provider here replaces the
+    /// prompt that works today with a request its mapper would mangle. MLX runs an
+    /// unconstrained local model and has nothing to send.
+    static let providers: Set<ProviderID> = [.openAI, .anthropic, .gemini, .appleFoundation]
 
     static func supports(_ provider: ProviderID) -> Bool {
         providers.contains(provider)

@@ -129,24 +129,25 @@ struct GeminiMapperTests {
     }
 
     @Test func parseStreamDelta() {
-        var accumulated = ""
+        var state = GeminiStreamState()
         let event = """
         {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"}}]}
         """
 
-        let chunk = mapper.parseStreamEvent(event, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(event, state: &state)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.accumulatedContent == "Hello")
         #expect(chunk?.isComplete == false)
     }
 
     @Test func parseStreamFinish() {
-        var accumulated = "Hello world"
+        var state = GeminiStreamState()
+        state.accumulatedContent = "Hello world"
         let event = """
         {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}
         """
 
-        let chunk = mapper.parseStreamEvent(event, accumulated: &accumulated)
+        let chunk = mapper.parseStreamEvent(event, state: &state)
         #expect(chunk?.isComplete == true)
         #expect(chunk?.usage?.inputTokens == 5)
     }

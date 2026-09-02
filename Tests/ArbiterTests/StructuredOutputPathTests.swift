@@ -137,7 +137,7 @@ struct StructuredOutputPathTests {
         ScriptedProvider(id: id, script: [.answerTurn(contactJSON, provider: id)])
     }
 
-    @Test(arguments: [ProviderID.openAI, .appleFoundation])
+    @Test(arguments: [ProviderID.openAI, .anthropic, .gemini, .appleFoundation])
     func aProviderThatConstrainsDecodingIsSentTheSchema(id: ProviderID) async throws {
         let scripted = Self.provider(id)
         let ai = Arbiter(provider: scripted)
@@ -155,9 +155,10 @@ struct StructuredOutputPathTests {
         #expect(request.messages.last?.content.text == "Who is Ada?")
     }
 
-    /// Gemini and Ollama sit here rather than above on purpose: their mappers cannot yet
-    /// send a schema a request would survive, so the prompt path is the one that works.
-    @Test(arguments: [ProviderID.anthropic, .gemini, .ollama, .mlx])
+    /// Ollama sits here rather than above on purpose: its mapper cannot yet send a schema
+    /// a request would survive, so the prompt path is the one that works. MLX runs an
+    /// unconstrained local model and has nothing to send.
+    @Test(arguments: [ProviderID.ollama, .mlx])
     func aProviderWithoutSchemaSupportIsAskedInThePrompt(id: ProviderID) async throws {
         let scripted = Self.provider(id)
         let ai = Arbiter(provider: scripted)
@@ -193,7 +194,7 @@ struct StructuredOutputPathTests {
             id: .openAI, shouldError: .networkError(underlying: URLError(.timedOut))
         )
         let fallback = ScriptedProvider(
-            id: .anthropic, script: [.answerTurn(Self.contactJSON, provider: .anthropic)]
+            id: .ollama, script: [.answerTurn(Self.contactJSON, provider: .ollama)]
         )
         let ai = Arbiter {
             $0.cloud(failing)

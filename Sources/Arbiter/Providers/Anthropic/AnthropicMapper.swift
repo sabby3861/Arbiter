@@ -93,6 +93,11 @@ struct AnthropicMapper: Sendable {
             }
         }
 
+        if let format = request.responseFormat,
+           let outputConfig = try outputConfigJSON(for: format) {
+            body["output_config"] = outputConfig
+        }
+
         try validateToolSequence(request.messages)
         try validateDocumentCitations(request.messages)
         var pending = mapMessages(request.messages)
@@ -625,6 +630,26 @@ extension AnthropicMapper {
         }
 
         return toolJSON
+    }
+
+    /// Map the requested response format onto `output_config`.
+    ///
+    /// Only a schema reaches the wire: Anthropic has no JSON-mode flag, so
+    /// `.json` and `.text` keep taking the prompt path they always have rather
+    /// than being silently dropped into a field that does not exist.
+    ///
+    /// Shape verified 2 September 2026 against
+    /// https://platform.claude.com/docs/en/build-with-claude/structured-outputs —
+    /// generally available, so no beta header rides with it.
+    func outputConfigJSON(for format: ResponseFormat) throws -> [String: Any]? {
+        guard case .structured(let schema) = format else { return nil }
+        let parsed = try JSONSchemaNormalizer.parseObject(schema)
+        return [
+            "format": [
+                "type": "json_schema",
+                "schema": JSONSchemaNormalizer.anthropicSchema(parsed),
+            ],
+        ]
     }
 
     /// Build the `thinking` parameter, rejecting shapes the model refuses.

@@ -73,6 +73,16 @@ public struct GeminiProvider: AIProvider, Sendable {
         self.session = URLSession(configuration: configuration)
     }
 
+    /// The API path for one model and action.
+    ///
+    /// v1beta, not v1: thinking configuration, the current tool set and every
+    /// model past 2.5 exist only there.
+    static func endpointPath(model: String, stream: Bool) -> String {
+        let action = stream ? "streamGenerateContent" : "generateContent"
+        let safeName = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
+        return "/v1beta/models/\(safeName):\(action)"
+    }
+
     public func generate(_ request: AIRequest) async throws -> AIResponse {
         try Task.checkCancellation()
 
@@ -137,7 +147,7 @@ private extension GeminiProvider {
             throw mapHTTPError(statusCode: httpResponse.statusCode, body: errorBody)
         }
 
-        var accumulated = ""
+        var state = GeminiStreamState()
         for try await line in bytes.lines {
             try Task.checkCancellation()
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -145,21 +155,28 @@ private extension GeminiProvider {
             guard trimmedLine.hasPrefix("data: ") else { continue }
             let eventData = String(trimmedLine.dropFirst(6))
 
-            if let chunk = mapper.parseStreamEvent(eventData, accumulated: &accumulated) {
+            if let chunk = mapper.parseStreamEvent(eventData, state: &state) {
                 continuation.yield(chunk)
+                if chunk.isComplete { return }
             }
+        }
+
+        // The body ended without any candidate carrying a `finishReason` — the
+        // host simply closed the connection. No chunk so far is marked
+        // complete, so the turn would end with nothing terminating it,
+        // stranding the accumulated usage and the tool calls a loop is waiting
+        // on. A stream that produced nothing yields nothing, so the runtime
+        // still reports it as a failed stream rather than an empty answer.
+        if let final = mapper.finalChunk(state: state) {
+            continuation.yield(final)
         }
     }
 
     func buildURLRequest(modelName: String, stream: Bool, body: Data) throws -> URLRequest {
-        let action = stream ? "streamGenerateContent" : "generateContent"
-        let safeName = modelName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelName
-        let path = "/v1/models/\(safeName):\(action)"
-
         var components = URLComponents()
         components.scheme = baseURL.scheme
         components.host = baseURL.host
-        components.path = path
+        components.path = GeminiProvider.endpointPath(model: modelName, stream: stream)
 
         if stream {
             components.queryItems = [URLQueryItem(name: "alt", value: "sse")]

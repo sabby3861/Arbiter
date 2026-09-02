@@ -45,7 +45,7 @@ let ai = try Arbiter {
 Google's models with a generous free tier for experimentation.
 
 - **Get a key**: [aistudio.google.com](https://aistudio.google.com)
-- **Models**: `.flash25`, `.pro25`
+- **Models**: `.flash38`, `.flash37`, `.flash36`, `.flash35`, `.flashLite35`, `.flashLite31`, `.pro31Preview`, `.flash25`, `.flashLite25`, `.pro25` (default `.flash25`)
 - **Pricing**: Free tier available; paid tier varies by model
 
 ```swift

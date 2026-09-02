@@ -203,11 +203,20 @@ public struct ToolCall: Sendable, Equatable, Codable {
     public let id: String
     public let name: String
     public let arguments: JSONValue
+    /// The provider's opaque signature for the reasoning behind this call.
+    ///
+    /// Gemini attaches a `thoughtSignature` to the part carrying a function
+    /// call and requires it back unchanged when the conversation continues; a
+    /// turn replayed without it is rejected with `MISSING_THOUGHT_SIGNATURE`.
+    /// `nil` for providers that sign nothing, and for a call the model made
+    /// with thinking off.
+    public let signature: String?
 
-    public init(id: String, name: String, arguments: JSONValue) {
+    public init(id: String, name: String, arguments: JSONValue, signature: String? = nil) {
         self.id = id
         self.name = name
         self.arguments = arguments
+        self.signature = signature
     }
 }
 
