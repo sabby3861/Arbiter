@@ -50,6 +50,7 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
     private let store: AppleFMSessionStore
     private let sessionFactory: FMSessionFactory
     private let availabilityCheck: @Sendable () async -> Bool
+    private let localeSupport: @Sendable (Locale, AppleFMOptions) -> Bool
     /// Captured once so error reporting and tests agree on one number.
     private let contextLimit: Int
 
@@ -60,7 +61,10 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
             // alongside the rest of the token-accounting work.
             maxContextTokens: 4_096,
             supportsStreaming: true,
-            supportsToolCalling: false,
+            // Tools run inside the session's own loop, so a turn completes with the tool
+            // results already folded in. See ``AppleFMToolBinding`` for what that means for
+            // a caller expecting `FinishReason.toolCall`.
+            supportsToolCalling: true,
             supportsImageInput: false,
             costPerMillionInputTokens: nil,
             costPerMillionOutputTokens: nil,
@@ -73,11 +77,28 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
         get async { await availabilityCheck() }
     }
 
+    /// Whether the model was trained on this locale's language.
+    ///
+    /// Reports the stock model: a per-request answer would need that request's
+    /// ``AppleFMOptions``, and an adapter can shift what is supported. Enforcement for a
+    /// specific configuration is `AppleFMOptions.enforceLocale`.
+    public func supportsLocale(_ locale: Locale = .current) -> Bool {
+        localeSupport(locale, AppleFMOptions())
+    }
+
+    /// The languages the on-device model supports.
+    public var supportedLanguages: Set<Locale.Language> {
+        FoundationModelsAvailabilityBridge.supportedLanguages
+    }
+
     public init() {
         self.init(
             store: AppleFMSessionStore(),
             contextLimit: FMBridge.contextSize,
             availabilityCheck: { await AvailabilityChecker.isAppleFoundationAvailable() },
+            localeSupport: { locale, options in
+                FoundationModelsAvailabilityBridge.supportsLocale(locale, options: options)
+            },
             sessionFactory: { transcript, options in
                 try LiveFMSession(transcript: transcript, options: options)
             }
@@ -92,11 +113,13 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
         store: AppleFMSessionStore,
         contextLimit: Int,
         availabilityCheck: @escaping @Sendable () async -> Bool,
+        localeSupport: @escaping @Sendable (Locale, AppleFMOptions) -> Bool = { _, _ in true },
         sessionFactory: @escaping FMSessionFactory
     ) {
         self.store = store
         self.contextLimit = contextLimit
         self.availabilityCheck = availabilityCheck
+        self.localeSupport = localeSupport
         self.sessionFactory = sessionFactory
     }
 
@@ -104,23 +127,100 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
         try Task.checkCancellation()
         try await ensureAvailable()
 
-        let options = Self.options(from: request)
-        let built = try FMTranscriptBuilder.build(from: request)
-        let settings = FMGenerationSettings(request: request, options: options)
+        let options = try Self.resolvedOptions(for: request)
+        try checkLocale(options)
+        let built = try FMTranscriptBuilder.build(from: request, toolNames: Self.toolNames(of: options))
+        let settings = FMGenerationSettings(
+            request: request, options: options, schema: try Self.schemaTree(for: request)
+        )
 
-        let text = try await withOverflowRecovery(built: built, options: options) { transcript, prompt in
+        let result = try await withOverflowRecovery(built: built, options: options) { transcript, prompt in
             let session = try await self.session(for: transcript, options: options)
             guard !session.isResponding else { throw ArbiterError.busy(.appleFoundation) }
-            return try await session.respond(to: prompt, settings: settings).text
+            return try await session.respond(to: prompt, settings: settings)
         }
 
         return AIResponse(
             id: "apple-fm-\(UUID().uuidString)",
-            content: text,
+            content: result.text,
             model: "apple-foundation",
             provider: .appleFoundation,
+            // A record of what ran, not a request to run anything: the session already
+            // called these tools and read their output, which is why the turn is complete.
+            toolCalls: result.toolCalls.map(Self.toolCall(from:)),
             finishReason: .complete
         )
+    }
+
+    /// Generates a value of a Swift `@Generable` type through Apple's native decoding.
+    ///
+    /// Constrains generation to the type's own compile-time schema, which is stricter than
+    /// routing a JSON Schema string through ``ResponseFormat/structured(schema:)`` and needs
+    /// no decoding step of Arbiter's own.
+    ///
+    /// Exists only when the `FoundationModels` framework is linked — `Generable` is its
+    /// type, and no stand-in would be honest — so this is the one part of the provider's
+    /// surface that varies by build configuration.
+    ///
+    /// - Throws: `ArbiterError.providerUnavailable` when the provider is running against an
+    ///   injected test session, which has no on-device model to generate against.
+    public func generate<Content: Generable>(
+        _ request: AIRequest,
+        as type: Content.Type
+    ) async throws -> Content {
+        try Task.checkCancellation()
+        try await ensureAvailable()
+
+        let options = try Self.resolvedOptions(for: request)
+        try checkLocale(options)
+        let built = try FMTranscriptBuilder.build(from: request, toolNames: Self.toolNames(of: options))
+        let settings = FMGenerationSettings(request: request, options: options)
+
+        return try await withOverflowRecovery(built: built, options: options) { transcript, prompt in
+            let session = try await self.generableSession(for: transcript, options: options)
+            guard !session.isResponding else { throw ArbiterError.busy(.appleFoundation) }
+            return try await session.respond(to: prompt, generating: type, settings: settings)
+        }
+    }
+
+    /// Streams partially generated values of a `@Generable` type as the model fills them in.
+    ///
+    /// - Note: `Content.PartiallyGenerated` must be `Sendable` to cross the stream. The
+    ///   `@Generable` macro's generated type is; the protocol itself does not require it,
+    ///   so the constraint is spelled out rather than assumed.
+    public func streamGenerate<Content: Generable>(
+        _ request: AIRequest,
+        as type: Content.Type
+    ) -> AsyncThrowingStream<Content.PartiallyGenerated, any Error>
+    where Content.PartiallyGenerated: Sendable {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try Task.checkCancellation()
+                    try await ensureAvailable()
+
+                    let options = try Self.resolvedOptions(for: request)
+                    try checkLocale(options)
+                    let built = try FMTranscriptBuilder.build(
+                        from: request, toolNames: Self.toolNames(of: options)
+                    )
+                    let settings = FMGenerationSettings(request: request, options: options)
+                    let session = try await generableSession(for: built.transcript, options: options)
+                    guard !session.isResponding else { throw ArbiterError.busy(.appleFoundation) }
+
+                    for try await partial in session.stream(
+                        to: built.prompt, generating: type, settings: settings
+                    ) {
+                        try Task.checkCancellation()
+                        continuation.yield(partial)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: mapped(error))
+                }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
     }
 
     public func stream(_ request: AIRequest) -> AsyncThrowingStream<AIStreamChunk, Error> {
@@ -170,6 +270,86 @@ private extension AppleFoundationProvider {
         request.providerOptions[.appleFoundation] as? AppleFMOptions ?? AppleFMOptions()
     }
 
+    /// The options this request actually runs with, once its tools are resolved.
+    ///
+    /// `AIRequest.tools` declares what a request wants; ``AppleFMOptions/tools`` supplies
+    /// the executors Apple needs to run them. A declared tool with no binding is rejected
+    /// rather than dropped — following F3 and F4, a request the provider cannot honour as
+    /// written fails locally instead of quietly running without the tool the caller was
+    /// counting on. When a request declares tools, the session is built with exactly those;
+    /// when it declares none, every binding is registered.
+    ///
+    /// Narrowing the bindings here rather than at each use keeps one description of the
+    /// session: the same value feeds `sessionIdentity`, the factory and the transcript, so
+    /// they cannot disagree about which tools this session has.
+    static func resolvedOptions(for request: AIRequest) throws -> AppleFMOptions {
+        var options = self.options(from: request)
+
+        var bindings: [String: AppleFMToolBinding] = [:]
+        for binding in options.tools {
+            guard bindings.updateValue(binding, forKey: binding.definition.name) == nil else {
+                throw ArbiterError.invalidRequest(
+                    reason: """
+                    AppleFMOptions.tools binds '\(binding.definition.name)' more than once. Tool \
+                    names identify the tool to the model, so they must be unique.
+                    """
+                )
+            }
+        }
+
+        let declared = request.tools?.map(\.name) ?? []
+        guard !declared.isEmpty else { return options }
+        guard Set(declared).count == declared.count else {
+            throw ArbiterError.invalidRequest(
+                reason: "AIRequest.tools declares the same tool name more than once."
+            )
+        }
+
+        let unbound = declared.filter { bindings[$0] == nil }
+        guard unbound.isEmpty else {
+            throw ArbiterError.invalidRequest(
+                reason: """
+                Apple Foundation Models runs tools on-device and needs an executor for each: \
+                \(unbound.joined(separator: ", ")) \(unbound.count == 1 ? "has" : "have") no binding \
+                in AppleFMOptions.tools.
+                """
+            )
+        }
+        options.tools = declared.compactMap { bindings[$0] }
+        return options
+    }
+
+    static func toolNames(of options: AppleFMOptions) -> [String] {
+        options.tools.map(\.definition.name)
+    }
+
+    /// The response schema for this request, when it asked for one.
+    ///
+    /// Only `.structured` converts: `.json` carries no shape to constrain against, and is
+    /// already served by the generic JSON prompting in `StructuredOutput`.
+    static func schemaTree(for request: AIRequest) throws -> FMSchemaTree? {
+        guard case .structured(let schema)? = request.responseFormat else { return nil }
+        return try FMSchemaConverter.tree(fromSchemaString: schema, rootName: "Response")
+    }
+
+    /// Arguments come back as the JSON the model generated under the tool's own schema, so
+    /// a decode failure would mean Apple emitted something its own constraint forbade.
+    /// Reported as an empty argument set rather than losing the record that a call happened.
+    static func toolCall(from call: FMToolCall) -> ToolCall {
+        let arguments = (try? JSONDecoder().decode(JSONValue.self, from: Data(call.argumentsJSON.utf8)))
+            ?? .object([:])
+        return ToolCall(id: call.id, name: call.toolName, arguments: arguments)
+    }
+
+    /// Rejects a request whose locale the model does not support, when asked to.
+    func checkLocale(_ options: AppleFMOptions) throws {
+        guard options.enforceLocale else { return }
+        let locale = options.locale ?? .current
+        guard localeSupport(locale, options) else {
+            throw ArbiterError.unsupportedLanguage(.appleFoundation, locale: locale.identifier)
+        }
+    }
+
     func ensureAvailable() async throws {
         guard await isAvailable else {
             let reason = await AvailabilityChecker.unavailableReason()
@@ -187,6 +367,26 @@ private extension AppleFoundationProvider {
         )
     }
 
+    /// The same session, seen through the interface that can generate a `Generable` value.
+    ///
+    /// Only a session backed by a real `LanguageModelSession` conforms; an injected double
+    /// speaks Arbiter's vocabulary and has no model behind it. That is reported as
+    /// unavailability rather than as a bad request, because the request is fine — this
+    /// build simply has nothing on-device to answer it.
+    func generableSession(
+        for transcript: FMTranscript,
+        options: AppleFMOptions
+    ) async throws -> any FMGenerableRunning {
+        let session = try await session(for: transcript, options: options)
+        guard let generable = session as? any FMGenerableRunning else {
+            throw ArbiterError.providerUnavailable(
+                .appleFoundation,
+                reason: "Generating a Generable type needs a live on-device session."
+            )
+        }
+        return generable
+    }
+
     /// Translates a session error into an `ArbiterError`. Cancellation and errors that are
     /// already `ArbiterError`s (the transcript builder's rejections) pass through unchanged.
     func mapped(_ error: any Error) -> any Error {
@@ -197,11 +397,11 @@ private extension AppleFoundationProvider {
 
     /// Runs `body`, and on a context overflow optionally summarises the older history and
     /// retries exactly once. A second overflow throws: retrying again would loop.
-    func withOverflowRecovery(
+    func withOverflowRecovery<Result>(
         built: FMTranscriptBuilder.Built,
         options: AppleFMOptions,
-        body: @Sendable (FMTranscript, String) async throws -> String
-    ) async throws -> String {
+        body: @Sendable (FMTranscript, String) async throws -> Result
+    ) async throws -> Result {
         do {
             return try await body(built.transcript, built.prompt)
         } catch {
@@ -258,9 +458,16 @@ private extension AppleFoundationProvider {
 
         // A fresh, instruction-only session: summarising inside the overflowing session
         // would overflow again.
+        //
+        // Tools are stripped from it, and this matters: their executors have real effects.
+        // Condensing history is Arbiter's own housekeeping, not something the caller asked
+        // the model to act on, so a summarising turn must not be able to book a table or
+        // send a message on its way to producing a paragraph.
+        var summaryOptions = options
+        summaryOptions.tools = []
         let summariser = try sessionFactory(
             FMTranscript(entries: [.instructions(segments: [.text(Self.summaryInstruction)], toolNames: [])]),
-            options
+            summaryOptions
         )
         let summary: String
         do {
@@ -326,14 +533,18 @@ private extension AppleFoundationProvider {
         try Task.checkCancellation()
         try await ensureAvailable()
 
-        let options = Self.options(from: request)
-        let built = try FMTranscriptBuilder.build(from: request)
-        let settings = FMGenerationSettings(request: request, options: options)
+        let options = try Self.resolvedOptions(for: request)
+        try checkLocale(options)
+        let built = try FMTranscriptBuilder.build(from: request, toolNames: Self.toolNames(of: options))
+        let settings = FMGenerationSettings(
+            request: request, options: options, schema: try Self.schemaTree(for: request)
+        )
 
         // Accumulation lives here rather than in the attempt, so a failure part-way through
         // a stream is still visible to the retry guard below: text already delivered to the
         // consumer must never be re-delivered by a second attempt.
         var accumulated = ""
+        var toolCalls: [FMToolCall] = []
         var transcript = built.transcript
         var didRetry = false
 
@@ -344,8 +555,13 @@ private extension AppleFoundationProvider {
 
                 for try await snapshot in session.stream(to: built.prompt, settings: settings) {
                     try Task.checkCancellation()
+                    if !snapshot.toolCalls.isEmpty { toolCalls = snapshot.toolCalls }
                     let delta = Self.delta(from: accumulated, to: snapshot.content)
                     accumulated = snapshot.content
+                    // A snapshot that only reports tool calls carries no new text; emitting a
+                    // chunk for it would show the consumer an empty delta for nothing. The
+                    // calls ride on the final chunk instead, per `AIStreamChunk.toolCalls`.
+                    guard !delta.isEmpty || snapshot.toolCalls.isEmpty else { continue }
                     continuation.yield(AIStreamChunk(
                         delta: delta,
                         accumulatedContent: accumulated,
@@ -367,6 +583,9 @@ private extension AppleFoundationProvider {
 
                 logger.notice("Apple FM context overflow while streaming; summarising and retrying once")
                 didRetry = true
+                // The abandoned attempt's calls belong to a turn that produced nothing; the
+                // retry reports its own.
+                toolCalls = []
                 if let conversationID = options.conversationID {
                     // The cached session holds the transcript that just overflowed.
                     await store.discard(conversationID: conversationID)
@@ -380,6 +599,7 @@ private extension AppleFoundationProvider {
             accumulatedContent: accumulated,
             isComplete: true,
             finishReason: .complete,
+            toolCalls: toolCalls.isEmpty ? nil : toolCalls.map(Self.toolCall(from:)),
             provider: .appleFoundation
         ))
     }
@@ -398,7 +618,10 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
             supportedTasks: [.chat, .summarization, .translation, .structuredOutput],
             maxContextTokens: 4_096,
             supportsStreaming: true,
-            supportsToolCalling: false,
+            // Capabilities describe the provider, not this build of it: availability is what
+            // gates use, and reporting differently here would make routing decisions depend
+            // on which SDK the app was compiled against.
+            supportsToolCalling: true,
             supportsImageInput: false,
             costPerMillionInputTokens: nil,
             costPerMillionOutputTokens: nil,
@@ -410,6 +633,12 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
     public var isAvailable: Bool {
         get async { false }
     }
+
+    /// No model is linked, so no language is supported.
+    public func supportsLocale(_ locale: Locale = .current) -> Bool { false }
+
+    /// Empty for the same reason.
+    public var supportedLanguages: Set<Locale.Language> { [] }
 
     public init() {
         logger.debug("Apple Foundation Models stub initialized — FoundationModels framework not linked")

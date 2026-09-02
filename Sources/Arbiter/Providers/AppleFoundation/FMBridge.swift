@@ -21,19 +21,28 @@ enum FMBridge {
 
     // MARK: - Arbiter -> FoundationModels
 
-    static func transcript(from source: FMTranscript) throws -> Transcript {
-        Transcript(entries: try source.entries.map(entry(from:)))
+    /// - Parameter tools: the tools this session will be built with. Their definitions are
+    ///   attached to the leading `instructions` entry, because that is where the framework
+    ///   itself puts them when it builds a transcript from `LanguageModelSession(tools:)` —
+    ///   a transcript-built session with no definitions in its instructions would register
+    ///   executors the model was never told about.
+    static func transcript(from source: FMTranscript, tools: [any Tool] = []) throws -> Transcript {
+        let definitions = tools.map { Transcript.ToolDefinition(tool: $0) }
+        return Transcript(entries: try source.entries.map { try entry(from: $0, toolDefinitions: definitions) })
     }
 
-    private static func entry(from source: FMTranscriptEntry) throws -> Transcript.Entry {
+    private static func entry(
+        from source: FMTranscriptEntry,
+        toolDefinitions: [Transcript.ToolDefinition]
+    ) throws -> Transcript.Entry {
         switch source {
-        case .instructions(let segments, let toolNames):
-            // Tool definitions are attached by the provider once tools are bound (F7b);
-            // the names are carried here so the fingerprint reflects them.
-            _ = toolNames
+        case .instructions(let segments, _):
+            // The entry's own `toolNames` are Arbiter's record of which tools this history
+            // was produced with; what the session needs is the full definition, which only
+            // the bound tools carry.
             return .instructions(Transcript.Instructions(
                 segments: try segments.map(segment(from:)),
-                toolDefinitions: []
+                toolDefinitions: toolDefinitions
             ))
 
         case .prompt(let segments):
@@ -101,6 +110,104 @@ enum FMBridge {
             .random(top: k, seed: seed)
         case .randomThreshold(let probability, let seed):
             .random(probabilityThreshold: probability, seed: seed)
+        }
+    }
+
+    /// Builds Apple's schema from the tree the pure converter produced.
+    ///
+    /// Every decision was made upstream; what remains is the construction Apple validates —
+    /// duplicate type names and undefined references — which is reported as a bad request,
+    /// since that is what it is.
+    static func generationSchema(from tree: FMSchemaTree) throws -> GenerationSchema {
+        do {
+            return try GenerationSchema(
+                root: dynamicSchema(from: tree.root),
+                dependencies: tree.dependencies.map(dynamicSchema(from:))
+            )
+        } catch let error as GenerationSchema.SchemaError {
+            throw ArbiterError.invalidRequest(
+                reason: "Apple Foundation Models rejected the schema: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static func dynamicSchema(from node: FMSchemaNode) -> DynamicGenerationSchema {
+        switch node {
+        case .object(let name, let description, let properties):
+            return DynamicGenerationSchema(
+                name: name,
+                description: description,
+                properties: properties.map {
+                    DynamicGenerationSchema.Property(
+                        name: $0.name,
+                        description: $0.description,
+                        schema: dynamicSchema(from: $0.schema),
+                        isOptional: $0.isOptional
+                    )
+                }
+            )
+
+        case .stringEnum(let name, let description, let choices):
+            return DynamicGenerationSchema(name: name, description: description, anyOf: choices)
+
+        case .anyOf(let name, let description, let choices):
+            return DynamicGenerationSchema(
+                name: name, description: description, anyOf: choices.map(dynamicSchema(from:))
+            )
+
+        case .array(let item, let minimum, let maximum):
+            return DynamicGenerationSchema(
+                arrayOf: dynamicSchema(from: item),
+                minimumElements: minimum,
+                maximumElements: maximum
+            )
+
+        case .reference(let name):
+            return DynamicGenerationSchema(referenceTo: name)
+
+        case .string(let constant, let pattern):
+            var guides: [GenerationGuide<String>] = []
+            if let constant {
+                guides.append(.constant(constant))
+            } else if let pattern, let regex = try? Regex(pattern) {
+                // The converter already dropped patterns that will not compile; this second
+                // attempt is what makes the failure impossible rather than merely unlikely.
+                guides.append(.pattern(regex))
+            }
+            return DynamicGenerationSchema(type: String.self, guides: guides)
+
+        case .integer(let minimum, let maximum):
+            return DynamicGenerationSchema(type: Int.self, guides: bounds(minimum, maximum))
+
+        case .number(let minimum, let maximum):
+            return DynamicGenerationSchema(type: Double.self, guides: bounds(minimum, maximum))
+
+        case .boolean:
+            return DynamicGenerationSchema(type: Bool.self)
+        }
+    }
+
+    /// A closed range needs both ends, so a half-open bound stays a single guide. An
+    /// inverted range is treated as a lower bound only: `ClosedRange` traps when its bounds
+    /// cross, and trapping on a caller's bad schema is never the right answer.
+    ///
+    /// Written twice because `GenerationGuide`'s numeric statics are declared per concrete
+    /// type — there is no protocol tying them together to be generic over.
+    private static func bounds(_ minimum: Int?, _ maximum: Int?) -> [GenerationGuide<Int>] {
+        switch (minimum, maximum) {
+        case (let low?, let high?) where low <= high: [.range(low...high)]
+        case (let low?, _): [.minimum(low)]
+        case (nil, let high?): [.maximum(high)]
+        case (nil, nil): []
+        }
+    }
+
+    private static func bounds(_ minimum: Double?, _ maximum: Double?) -> [GenerationGuide<Double>] {
+        switch (minimum, maximum) {
+        case (let low?, let high?) where low <= high: [.range(low...high)]
+        case (let low?, _): [.minimum(low)]
+        case (nil, let high?): [.maximum(high)]
+        case (nil, nil): []
         }
     }
 
@@ -193,6 +300,10 @@ enum FMBridge {
         if error is CancellationError { return nil }
 
         if let toolCallError = error as? LanguageModelSession.ToolCallError {
+            // Apple wraps whatever the executor threw, cancellation included. Unwrapped
+            // first, or a tool that was cancelled would be reported as a bad request and
+            // the cancellation would never reach the caller.
+            if toolCallError.underlyingError is CancellationError { return nil }
             return .toolCallFailed(
                 toolName: toolCallError.tool.name,
                 description: toolCallError.underlyingError.localizedDescription

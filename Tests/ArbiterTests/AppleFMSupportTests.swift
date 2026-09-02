@@ -187,6 +187,81 @@ struct AppleFMOptionsTests {
         #expect(a.description != AppleFMOptions(sampling: .greedy, conversationID: "chat-2").description)
     }
 
+    /// A session's tools are fixed at construction, so a turn carrying a different tool set
+    /// must not reuse the session built for the previous one.
+    @Test func sessionIdentityTracksBoundTools() {
+        let weather = binding(named: "get_weather")
+        let clock = binding(named: "get_time")
+
+        #expect(AppleFMOptions(tools: [weather]).sessionIdentity != AppleFMOptions().sessionIdentity)
+        #expect(AppleFMOptions(tools: [weather]).sessionIdentity
+                != AppleFMOptions(tools: [weather, clock]).sessionIdentity)
+        // Sorted: listing the same tools in a different order describes the same session.
+        #expect(AppleFMOptions(tools: [weather, clock]).sessionIdentity
+                == AppleFMOptions(tools: [clock, weather]).sessionIdentity)
+    }
+
+    /// A tool's whole contract shapes the session, not just its name: a turn that keeps the
+    /// name but changes the description or the schema is describing a different tool, and
+    /// reusing the session would keep advertising the old one.
+    @Test func sessionIdentityTracksAToolsContractNotJustItsName() {
+        let base = AppleFMOptions(tools: [binding(named: "get_weather")])
+
+        let redescribed = AppleFMOptions(tools: [AppleFMToolBinding(
+            definition: ToolDefinition(
+                name: "get_weather", description: "Now with wind", inputSchema: ["type": "object"]
+            ),
+            execute: { _ in "" }
+        )])
+        let reschemad = AppleFMOptions(tools: [AppleFMToolBinding(
+            definition: ToolDefinition(
+                name: "get_weather",
+                description: "",
+                inputSchema: [
+                    "type": "object",
+                    "properties": ["city": ["type": "string"], "days": ["type": "integer"]],
+                ]
+            ),
+            execute: { _ in "" }
+        )])
+
+        #expect(base.sessionIdentity != redescribed.sessionIdentity)
+        #expect(base.sessionIdentity != reschemad.sessionIdentity)
+    }
+
+    /// The reason the description is hand-written: a synthesised one renders the tool's
+    /// schema dictionary in per-process order, so the same request would key differently
+    /// between runs and never hit the response cache. Two separately built but identical
+    /// bindings — distinct closures included — must describe identically.
+    @Test func descriptionIsStableAcrossDistinctToolClosures() {
+        let a = AppleFMOptions(tools: [binding(named: "get_weather")])
+        let b = AppleFMOptions(tools: [binding(named: "get_weather")])
+        #expect(a.description == b.description)
+        #expect(a.description != AppleFMOptions(tools: [binding(named: "get_time")]).description)
+        // The schema is digested rather than rendered, so no dictionary description leaks in.
+        #expect(!a.description.contains("properties"))
+    }
+
+    @Test func descriptionSeparatesSchemaAndLocaleSettings() {
+        let base = AppleFMOptions()
+        #expect(AppleFMOptions(includeSchemaInPrompt: false).description != base.description)
+        #expect(AppleFMOptions(locale: Locale(identifier: "fr_FR"), enforceLocale: true).description
+                != base.description)
+        // A locale nobody is enforcing changes nothing about the answer.
+        #expect(AppleFMOptions(locale: Locale(identifier: "fr_FR")).description == base.description)
+    }
+
+    private func binding(named name: String) -> AppleFMToolBinding {
+        AppleFMToolBinding(
+            definition: ToolDefinition(
+                name: name,
+                description: "",
+                inputSchema: ["type": "object", "properties": ["city": ["type": "string"]]]
+            ),
+            execute: { _ in "" }
+        )
+    }
+
     @Test func explicitSamplingWinsOverTopP() {
         let request = AIRequest.chat("Hi").withTopP(0.5)
         let settings = FMGenerationSettings(request: request, options: AppleFMOptions(sampling: .greedy))
@@ -200,6 +275,17 @@ struct AppleFMOptionsTests {
             )
             #expect(settings.sampling == nil)
         }
+    }
+
+    @Test func schemaSettingsFollowTheOptions() {
+        let tree = FMSchemaTree(root: .boolean, dependencies: [])
+        let settings = FMGenerationSettings(
+            request: AIRequest.chat("Hi"),
+            options: AppleFMOptions(includeSchemaInPrompt: false),
+            schema: tree
+        )
+        #expect(settings.schema == tree)
+        #expect(settings.includeSchemaInPrompt == false)
     }
 
     @Test func topPBecomesNucleusSamplingWhenNoSamplingIsSet() {
@@ -323,5 +409,51 @@ struct AppleFMSessionStoreTests {
         )
 
         #expect(factory.sessionCount == 2)
+    }
+}
+
+@Suite("AppleFMAvailability")
+struct AppleFMAvailabilityTests {
+
+    /// The strings predate the enum and are part of `providerUnavailable`'s payload, so
+    /// they are produced from it rather than replaced by it.
+    @Test func everyReasonHasItsEstablishedMessage() {
+        #expect(AppleFMAvailability.available.message == "Available")
+        #expect(AppleFMAvailability.unavailable(.deviceNotEligible).message
+                == "This device does not support Apple Intelligence")
+        #expect(AppleFMAvailability.unavailable(.appleIntelligenceNotEnabled).message
+                == "Apple Intelligence is not enabled. Enable it in Settings > Apple Intelligence & Siri")
+        #expect(AppleFMAvailability.unavailable(.modelNotReady).message
+                == "The on-device model is still downloading or preparing")
+        #expect(AppleFMAvailability.unavailable(.osTooOld).message
+                == "Apple Foundation Models requires iOS 26+ / macOS 26+ / visionOS 26+")
+        #expect(AppleFMAvailability.unavailable(.frameworkNotLinked).message
+                == "FoundationModels framework is not available on this platform")
+        #expect(AppleFMAvailability.unavailable(.unknown).message
+                == "Apple Foundation Models are not available")
+    }
+
+    /// Only a model that is still preparing is worth waiting for; the rest need someone to
+    /// change something.
+    @Test func onlyAPreparingModelIsTransient() {
+        #expect(AppleFMAvailability.unavailable(.modelNotReady).isTransient)
+        for reason: AppleFMUnavailableReason in [
+            .deviceNotEligible, .appleIntelligenceNotEnabled, .frameworkNotLinked, .osTooOld, .unknown,
+        ] {
+            #expect(!AppleFMAvailability.unavailable(reason).isTransient)
+        }
+        #expect(!AppleFMAvailability.available.isTransient)
+    }
+
+    @Test func availabilityAgreesWithTheDerivedHelpers() async {
+        let availability = await AvailabilityChecker.availability()
+        #expect(await AvailabilityChecker.isAppleFoundationAvailable() == availability.isAvailable)
+        #expect(await AvailabilityChecker.unavailableReason() == availability.message)
+    }
+
+    @Test func aBuildWithoutTheFrameworkReportsWhy() async {
+        #if !canImport(FoundationModels)
+        #expect(await AvailabilityChecker.availability() == .unavailable(.frameworkNotLinked))
+        #endif
     }
 }

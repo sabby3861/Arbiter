@@ -20,7 +20,11 @@ enum FMTranscriptBuilder {
         let prompt: String
     }
 
-    static func build(from request: AIRequest) throws -> Built {
+    /// - Parameter toolNames: the tools this turn runs with, recorded on the instructions
+    ///   entry. Passed in rather than read from `request.tools` because the effective set is
+    ///   what the request declares *and* the provider options bind — a decision that belongs
+    ///   to the provider, not to this translation.
+    static func build(from request: AIRequest, toolNames: [String] = []) throws -> Built {
         let messages = request.messages
 
         // System content has no transcript entry of its own: it becomes the leading
@@ -58,11 +62,15 @@ enum FMTranscriptBuilder {
         }
 
         var entries: [FMTranscriptEntry] = []
-        if !instructionParts.isEmpty {
+        // An entry with no text is still emitted when tools are bound: the instructions
+        // entry is where a transcript carries its tool definitions, so without one the
+        // session would hold executors the model was never told about.
+        if !instructionParts.isEmpty || !toolNames.isEmpty {
             entries.append(.instructions(
-                segments: [.text(instructionParts.joined(separator: "\n\n"))],
-                // Tool definitions reach the instructions entry in F7b, once tools are bound.
-                toolNames: []
+                segments: instructionParts.isEmpty
+                    ? []
+                    : [.text(instructionParts.joined(separator: "\n\n"))],
+                toolNames: toolNames
             ))
         }
 

@@ -18,6 +18,10 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
         case failure(FMErrorKind)
         /// Emits snapshots and then fails, so a mid-stream failure can be exercised.
         case chunksThenFailure([String], FMErrorKind)
+        /// A turn in which the model called tools before answering. `outputs` pairs with
+        /// `calls` by position, so the recorded transcript grows exactly as a real
+        /// session's does — call entries followed by one output entry each.
+        case toolTurn(text: String, calls: [FMToolCall], outputs: [String])
     }
 
     private let lock = NSLock()
@@ -75,10 +79,21 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
             let produced: String? = switch step {
             case .text(let text): text
             case .chunks(let chunks): chunks.last ?? ""
+            case .toolTurn(let text, _, _): text
             case .failure, .chunksThenFailure: nil
             }
             if let produced {
                 _liveTranscript.entries.append(.prompt(segments: [.text(prompt)]))
+                if case .toolTurn(_, let calls, let outputs) = step, !calls.isEmpty {
+                    _liveTranscript.entries.append(.toolCalls(calls))
+                    for (index, call) in calls.enumerated() {
+                        _liveTranscript.entries.append(.toolOutput(
+                            id: call.id,
+                            toolName: call.toolName,
+                            segments: [.text(index < outputs.count ? outputs[index] : "")]
+                        ))
+                    }
+                }
                 _liveTranscript.entries.append(.response(segments: [.text(produced)]))
             }
             return step
@@ -91,6 +106,8 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
             return FMRunResult(text: text)
         case .chunks(let chunks):
             return FMRunResult(text: chunks.last ?? "")
+        case .toolTurn(let text, let calls, _):
+            return FMRunResult(text: text, toolCalls: calls)
         case .failure(let kind):
             throw FMSessionError(kind: kind)
         case .chunksThenFailure(_, let kind):
@@ -120,6 +137,12 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
                     continuation.yield(FMStreamSnapshot(content: chunk))
                 }
                 continuation.finish(throwing: FMSessionError(kind: kind))
+            case .toolTurn(let text, let calls, _):
+                // Mirrors `LiveFMSession`: the calls are only knowable once the turn ends,
+                // so they arrive on a final snapshot whose content is unchanged.
+                continuation.yield(FMStreamSnapshot(content: text))
+                continuation.yield(FMStreamSnapshot(content: text, toolCalls: calls))
+                continuation.finish()
             }
         }
     }

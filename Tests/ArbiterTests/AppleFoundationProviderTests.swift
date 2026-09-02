@@ -33,10 +33,12 @@ struct AppleFoundationProviderTests {
         #expect(tasks.contains(.structuredOutput))
     }
 
-    @Test func providerDoesNotSupportToolCalling() {
+    /// Tools are executed by the session itself, so a turn ends complete rather than at a
+    /// `.toolCall` finish reason. See ``AppleFMToolBinding``.
+    @Test func providerSupportsToolCalling() {
         guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
-        #expect(!provider.capabilities.supportsToolCalling)
+        #expect(provider.capabilities.supportsToolCalling)
     }
 
     @Test func stubProviderReportsUnavailable() async {
@@ -128,6 +130,20 @@ struct AvailabilityCheckerTests {
 }
 
 #if canImport(FoundationModels)
+import FoundationModels
+
+/// A small `@Generable` fixture for the native structured-generation path.
+///
+/// Inline rather than on disk, matching `ToolTurnFixture`: the package declares no test
+/// resources.
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
+@Generable
+struct CityFact: Equatable {
+    @Guide(description: "The city's name")
+    var city: String
+    @Guide(description: "Population in millions")
+    var populationMillions: Int
+}
 
 /// Behavioural coverage for the provider itself.
 ///
@@ -142,6 +158,7 @@ struct AppleFoundationProviderBehaviourTests {
         scripts: [[MockFMSession.Step]],
         available: Bool = true,
         contextLimit: Int = 4_096,
+        localeSupported: Bool = true,
         store: AppleFMSessionStore = AppleFMSessionStore()
     ) -> (AppleFoundationProvider, MockFMSessionFactory) {
         let factory = MockFMSessionFactory(scripts: scripts)
@@ -149,9 +166,25 @@ struct AppleFoundationProviderBehaviourTests {
             store: store,
             contextLimit: contextLimit,
             availabilityCheck: { available },
+            localeSupport: { _, _ in localeSupported },
             sessionFactory: factory.factory
         )
         return (provider, factory)
+    }
+
+    private func binding(
+        named name: String,
+        schema: JSONValue = ["type": "object", "properties": ["city": ["type": "string"]]],
+        execute: @escaping @Sendable (JSONValue) async throws -> String = { _ in "ok" }
+    ) -> AppleFMToolBinding {
+        AppleFMToolBinding(
+            definition: ToolDefinition(name: name, description: "Test tool", inputSchema: schema),
+            execute: execute
+        )
+    }
+
+    private func definition(named name: String) -> ToolDefinition {
+        ToolDefinition(name: name, description: "Test tool", inputSchema: ["type": "object"])
     }
 
     private var conversation: AIRequest {
@@ -362,26 +395,34 @@ struct AppleFoundationProviderBehaviourTests {
             ],
             systemPrompt: "Be terse."
         ).withProviderOptions(
-            AppleFMOptions(contextOverflow: .summarizeAndRetry), for: .appleFoundation
+            AppleFMOptions(contextOverflow: .summarizeAndRetry, tools: [binding(named: "get_weather")]),
+            for: .appleFoundation
         )
 
         let response = try await provider.generate(request)
 
         #expect(response.content == "Tokyo.")
         #expect(factory.sessionCount == 3)
+        // The retry keeps the caller's tools; only the summariser goes without.
+        #expect(factory.sessions.first?.options.tools.map(\.definition.name) == ["get_weather"])
+        #expect(factory.sessions.last?.options.tools.map(\.definition.name) == ["get_weather"])
 
         // The middle session is handed the turns being dropped, and only those.
         let summariser = try #require(factory.sessions.dropFirst().first)
         let summarised = try #require(summariser.prompts.first)
         #expect(summarised.contains("one"))
         #expect(!summarised.contains("And Japan?"))
+        // And it is given no tools: condensing history is Arbiter's housekeeping, so the
+        // model must not be able to run a caller's executor on the way to a paragraph.
+        #expect(summariser.options.tools.isEmpty)
 
         // The retry replays a shorter transcript that keeps the system prompt, carries the
         // summary, drops the oldest turns and retains the most recent ones verbatim.
         let original = try #require(factory.sessions.first)
         let retried = try #require(factory.sessions.last)
         #expect(retried.transcript.entries.count < original.transcript.entries.count)
-        #expect(retried.transcript.entries.first == .instructions(segments: [.text("Be terse.")], toolNames: []))
+        #expect(retried.transcript.entries.first
+                == .instructions(segments: [.text("Be terse.")], toolNames: ["get_weather"]))
 
         let replayed = Self.plainText(retried.transcript)
         #expect(replayed.contains("Earlier: they discussed capitals."))
@@ -643,6 +684,288 @@ struct AppleFoundationProviderBehaviourTests {
         #expect(factory.sessionCount == 1)
     }
 
+    // MARK: - Structured output
+
+    @Test func aStructuredResponseFormatReachesTheSessionAsASchema() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text(#"{"city":"Tokyo"}"#)]])
+        let request = AIRequest.chat("Where?").withResponseFormat(.structured(schema: """
+        {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+        """))
+
+        let response = try await provider.generate(request)
+
+        #expect(response.content == #"{"city":"Tokyo"}"#)
+        let settings = try #require(factory.sessions.first?.settings.first)
+        let schema = try #require(settings.schema)
+        #expect(schema.root == .object(
+            name: "Response",
+            description: nil,
+            properties: [FMSchemaNode.Property(
+                name: "city", description: nil,
+                schema: .string(constant: nil, pattern: nil), isOptional: false
+            )]
+        ))
+        #expect(settings.includeSchemaInPrompt)
+    }
+
+    @Test func includeSchemaInPromptIsForwarded() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("{}")]])
+        let request = AIRequest.chat("Where?")
+            .withResponseFormat(.structured(schema: #"{"type": "object", "properties": {}}"#))
+            .withProviderOptions(AppleFMOptions(includeSchemaInPrompt: false), for: .appleFoundation)
+
+        _ = try await provider.generate(request)
+
+        #expect(factory.sessions.first?.settings.first?.includeSchemaInPrompt == false)
+    }
+
+    /// Plain JSON carries no shape to constrain against; the generic prompting path already
+    /// covers it, so imposing a schema here would invent one the caller never asked for.
+    @Test func plainJSONFormatDoesNotProduceASchema() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("{}")]])
+
+        _ = try await provider.generate(AIRequest.chat("Where?").withResponseFormat(.json))
+
+        #expect(factory.sessions.first?.settings.first?.schema == nil)
+    }
+
+    /// A schema that cannot be converted is the caller's to fix, and fails before a session
+    /// is built rather than surfacing as an opaque generation failure.
+    @Test func anUnusableSchemaIsRejectedBeforeASessionIsBuilt() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("{}")]])
+        let request = AIRequest.chat("Where?").withResponseFormat(.structured(schema: """
+        {"type": "object", "properties": {"home": {"$ref": "#/$defs/Missing"}}}
+        """))
+
+        await #expect(throws: ArbiterError.self) {
+            try await provider.generate(request)
+        }
+        #expect(factory.sessionCount == 0)
+    }
+
+    @Test func aStructuredStreamCarriesTheSchemaToo() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.chunks([#"{"city":"#, #"{"city":"Tokyo"}"#])]])
+        let request = AIRequest.chat("Where?").withResponseFormat(.structured(schema: """
+        {"type": "object", "properties": {"city": {"type": "string"}}}
+        """))
+
+        var chunks: [AIStreamChunk] = []
+        for try await chunk in provider.stream(request) {
+            chunks.append(chunk)
+        }
+
+        #expect(chunks.last?.accumulatedContent == #"{"city":"Tokyo"}"#)
+        #expect(factory.sessions.first?.settings.first?.schema != nil)
+    }
+
+    // MARK: - Tools
+
+    @Test func boundToolsReachTheSessionAndAreNamedInTheTranscript() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("18C")]])
+        let request = AIRequest.chat("Weather?")
+            .withTools([definition(named: "get_weather")])
+            .withProviderOptions(AppleFMOptions(tools: [binding(named: "get_weather")]), for: .appleFoundation)
+
+        _ = try await provider.generate(request)
+
+        let session = try #require(factory.sessions.first)
+        #expect(session.options.tools.map(\.definition.name) == ["get_weather"])
+        // The instructions entry exists purely to carry the tool definitions here: without
+        // one, the session would hold executors the model was never told about.
+        #expect(session.transcript.entries.first
+                == .instructions(segments: [], toolNames: ["get_weather"]))
+    }
+
+    /// Following F3 and F4: a request the provider cannot honour as written fails rather
+    /// than running silently without the tool the caller was counting on.
+    @Test func aDeclaredToolWithNoBindingIsRejected() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("ok")]])
+        let request = AIRequest.chat("Weather?")
+            .withTools([definition(named: "get_weather")])
+            .withProviderOptions(AppleFMOptions(tools: [binding(named: "get_time")]), for: .appleFoundation)
+
+        do {
+            _ = try await provider.generate(request)
+            Issue.record("Expected the call to throw")
+        } catch let error as ArbiterError {
+            guard case .invalidRequest(let reason) = error else {
+                Issue.record("Expected invalidRequest, got \(error)")
+                return
+            }
+            #expect(reason.contains("get_weather"))
+            #expect(reason.contains("AppleFMOptions.tools"))
+        }
+        #expect(factory.sessionCount == 0)
+    }
+
+    /// Tool names identify the tool to the model, so two bindings cannot share one.
+    @Test func duplicateToolBindingsAreRejected() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[.text("ok")]])
+        let options = AppleFMOptions(tools: [binding(named: "get_weather"), binding(named: "get_weather")])
+
+        await #expect(throws: ArbiterError.self) {
+            try await provider.generate(
+                AIRequest.chat("Weather?").withProviderOptions(options, for: .appleFoundation)
+            )
+        }
+    }
+
+    /// A request that names a subset gets a session with exactly that subset — the tool set
+    /// is fixed at construction, so anything else would let the model call a tool this
+    /// request deliberately withheld.
+    @Test func onlyTheToolsARequestDeclaresAreRegistered() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("ok")]])
+        let options = AppleFMOptions(tools: [binding(named: "get_weather"), binding(named: "get_time")])
+
+        _ = try await provider.generate(
+            AIRequest.chat("Weather?")
+                .withTools([definition(named: "get_time")])
+                .withProviderOptions(options, for: .appleFoundation)
+        )
+
+        #expect(factory.sessions.first?.options.tools.map(\.definition.name) == ["get_time"])
+    }
+
+    /// With nothing declared, the bindings are the tool set: they were supplied on purpose.
+    @Test func bindingsAreRegisteredWhenTheRequestDeclaresNoTools() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("ok")]])
+        let options = AppleFMOptions(tools: [binding(named: "get_weather")])
+
+        _ = try await provider.generate(
+            AIRequest.chat("Weather?").withProviderOptions(options, for: .appleFoundation)
+        )
+
+        #expect(factory.sessions.first?.options.tools.map(\.definition.name) == ["get_weather"])
+    }
+
+    /// The loop completes in-session, so what a caller sees is a finished answer plus a
+    /// record of the calls behind it — never a `.toolCall` finish reason to act on.
+    @Test func toolCallsAreReportedRetrospectivelyOnACompletedResponse() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let call = FMToolCall(
+            id: "call-1", toolName: "get_weather", argumentsJSON: #"{"city":"Tokyo"}"#
+        )
+        let (provider, _) = makeProvider(scripts: [
+            [.toolTurn(text: "18C in Tokyo.", calls: [call], outputs: ["18C"])],
+        ])
+        let request = AIRequest.chat("Weather in Tokyo?")
+            .withProviderOptions(AppleFMOptions(tools: [binding(named: "get_weather")]), for: .appleFoundation)
+
+        let response = try await provider.generate(request)
+
+        #expect(response.finishReason == .complete)
+        #expect(response.content == "18C in Tokyo.")
+        #expect(response.toolCalls == [ToolCall(
+            id: "call-1", name: "get_weather", arguments: ["city": "Tokyo"]
+        )])
+    }
+
+    @Test func streamedToolCallsArriveOnTheFinalChunkWithoutAnEmptyDelta() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let call = FMToolCall(id: "call-1", toolName: "get_weather", argumentsJSON: "{}")
+        let (provider, _) = makeProvider(scripts: [
+            [.toolTurn(text: "18C.", calls: [call], outputs: ["18C"])],
+        ])
+        let request = AIRequest.chat("Weather?")
+            .withProviderOptions(AppleFMOptions(tools: [binding(named: "get_weather")]), for: .appleFoundation)
+
+        var chunks: [AIStreamChunk] = []
+        for try await chunk in provider.stream(request) {
+            chunks.append(chunk)
+        }
+
+        // The tool-call snapshot repeats the text, so it must not become a chunk of its own.
+        #expect(chunks.map(\.delta) == ["18C.", ""])
+        #expect(chunks.last?.isComplete == true)
+        #expect(chunks.last?.toolCalls?.map(\.name) == ["get_weather"])
+        #expect(chunks.dropLast().allSatisfy { $0.toolCalls == nil })
+    }
+
+    /// Generating a `@Generable` value needs the real on-device decoder; an injected double
+    /// has no model behind it, and says so rather than pretending.
+    @Test func generableGenerationReportsUnavailableAgainstAnInjectedSession() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[.text("{}")]])
+
+        do {
+            _ = try await provider.generate(AIRequest.chat("Where?"), as: CityFact.self)
+            Issue.record("Expected the call to throw")
+        } catch let error as ArbiterError {
+            guard case .providerUnavailable = error else {
+                Issue.record("Expected providerUnavailable, got \(error)")
+                return
+            }
+        }
+    }
+
+    // MARK: - Locale
+
+    /// Off by default: the check tests a locale, not the language the prompt is written in,
+    /// so enforcing it unasked would reject valid requests from an unsupported region.
+    @Test func anUnsupportedLocaleIsAllowedThroughUnlessEnforcementIsRequested() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[.text("ok")]], localeSupported: false)
+
+        let response = try await provider.generate(AIRequest.chat("Bonjour"))
+
+        #expect(response.content == "ok")
+    }
+
+    @Test func enforcingAnUnsupportedLocaleRejectsTheRequest() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("ok")]], localeSupported: false)
+        let options = AppleFMOptions(locale: Locale(identifier: "cy_GB"), enforceLocale: true)
+
+        do {
+            _ = try await provider.generate(
+                AIRequest.chat("Bore da").withProviderOptions(options, for: .appleFoundation)
+            )
+            Issue.record("Expected the call to throw")
+        } catch let error as ArbiterError {
+            guard case .unsupportedLanguage(let id, let locale) = error else {
+                Issue.record("Expected unsupportedLanguage, got \(error)")
+                return
+            }
+            #expect(id == .appleFoundation)
+            #expect(locale == "cy_GB")
+        }
+        #expect(factory.sessionCount == 0)
+    }
+
+    @Test func enforcingASupportedLocalePassesThrough() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[.text("ok")]], localeSupported: true)
+        let options = AppleFMOptions(locale: Locale(identifier: "en_GB"), enforceLocale: true)
+
+        let response = try await provider.generate(
+            AIRequest.chat("Hello").withProviderOptions(options, for: .appleFoundation)
+        )
+
+        #expect(response.content == "ok")
+    }
+
+    @Test func enforcementAppliesToStreamingToo() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[.text("ok")]], localeSupported: false)
+        let options = AppleFMOptions(enforceLocale: true)
+
+        await #expect(throws: ArbiterError.self) {
+            for try await _ in provider.stream(
+                AIRequest.chat("Hi").withProviderOptions(options, for: .appleFoundation)
+            ) {}
+        }
+    }
+
     private static func plainText(_ transcript: FMTranscript) -> String {
         transcript.entries.map { entry in
             switch entry {
@@ -654,6 +977,141 @@ struct AppleFoundationProviderBehaviourTests {
                 segments.map { if case .text(let value) = $0 { value } else { "" } }.joined()
             }
         }.joined(separator: "\n")
+    }
+}
+
+/// The real device path: a live `LanguageModelSession`, no doubles.
+///
+/// Skipped unless Apple Intelligence is actually available, so it is a no-op in CI and on
+/// machines with the feature switched off — everything else in this file runs everywhere.
+@Suite("AppleFoundationProvider on-device")
+struct AppleFoundationProviderDeviceTests {
+
+    @Test func generableTypesRoundTripThroughNativeDecoding() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        // Generously capped: constrained decoding throws `decodingFailure` on a truncated
+        // structure rather than returning partial JSON, so a tight cap would make this test
+        // fail on a verbose sample rather than on a real defect.
+        let fact = try await provider.generate(
+            AIRequest.chat("Tokyo's population, to the nearest million.").withMaxTokens(512),
+            as: CityFact.self
+        )
+
+        // What is under test is the round trip, not the model's grasp of demographics: a
+        // required `String` property came back as one, and an `Int` as an `Int`.
+        #expect(!fact.city.isEmpty)
+    }
+
+    @Test func generableTypesStreamAsPartialValues() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        var snapshots = 0
+        for try await _ in provider.streamGenerate(
+            AIRequest.chat("Paris's population, to the nearest million.").withMaxTokens(512),
+            as: CityFact.self
+        ) {
+            snapshots += 1
+        }
+
+        #expect(snapshots > 0)
+    }
+
+    /// The end-to-end claim behind `supportsToolCalling`: a transcript-built session with
+    /// bound tools is one the framework accepts and can run. Whether the model chooses to
+    /// call the tool is its own decision, so only the structural claim is asserted — plus
+    /// the record, when a call did happen.
+    @Test func aSessionWithBoundToolsRunsOnDevice() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        let calls = CallCounter()
+        let binding = AppleFMToolBinding(
+            definition: ToolDefinition(
+                name: "get_population",
+                description: "The population of a city, in millions",
+                inputSchema: [
+                    "type": "object",
+                    "properties": ["city": ["type": "string", "description": "City name"]],
+                    "required": ["city"],
+                ]
+            ),
+            execute: { arguments in
+                await calls.record(arguments)
+                return "14"
+            }
+        )
+
+        let response = try await provider.generate(
+            AIRequest.chat("Use the tool to get Tokyo's population, then state it.")
+                .withMaxTokens(512)
+                .withTools([binding.definition])
+                .withProviderOptions(AppleFMOptions(tools: [binding]), for: .appleFoundation)
+        )
+
+        #expect(!response.content.isEmpty)
+        // The loop completes in-session either way: there is never a call left for the
+        // caller to run.
+        #expect(response.finishReason == .complete)
+        // Whether the model calls the tool is its own decision, so the assertion is the
+        // invariant rather than the choice: what the response reports and what actually ran
+        // are the same events. (In practice this prompt does call it.)
+        let executed = await calls.count
+        #expect(response.toolCalls.count == executed)
+        if let call = response.toolCalls.first {
+            #expect(call.name == "get_population")
+            #expect(await calls.arguments.count == executed)
+        }
+    }
+
+    @Test func localeSupportIsReportedFromTheModel() async {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        #expect(provider.supportsLocale(Locale(identifier: "en_US")))
+        #expect(!provider.supportedLanguages.isEmpty)
+    }
+
+    /// The end-to-end claim behind `supportedTasks.structuredOutput`: a JSON Schema string
+    /// comes back as JSON matching it, decoded by constrained generation rather than by
+    /// asking the model nicely.
+    @Test func aStructuredSchemaConstrainsTheAnswer() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        let response = try await provider.generate(
+            AIRequest.chat("Tokyo's population, to the nearest million.")
+                .withMaxTokens(512)
+                .withResponseFormat(.structured(schema: """
+                {"type": "object",
+                 "properties": {"city": {"type": "string"}, "populationMillions": {"type": "integer"}},
+                 "required": ["city", "populationMillions"]}
+                """))
+        )
+
+        let decoded = try JSONDecoder().decode(
+            [String: JSONValue].self, from: Data(response.content.utf8)
+        )
+        #expect(decoded["city"] != nil)
+        #expect(decoded["populationMillions"] != nil)
+    }
+}
+
+/// Counts executor invocations across the concurrency boundary the session calls them on.
+private actor CallCounter {
+    private(set) var count = 0
+    private(set) var arguments: [JSONValue] = []
+
+    func record(_ value: JSONValue) {
+        count += 1
+        arguments.append(value)
     }
 }
 
