@@ -16,6 +16,10 @@ public struct AIStreamChunk: Sendable, Equatable {
     /// becomes available once its arguments are complete. A chunk that
     /// finishes one call carries that call; the final chunk carries every
     /// call made during the turn.
+    ///
+    /// Apple Foundation Models is the exception: it executes tools inside the
+    /// session, so its final chunk records calls that have already run rather
+    /// than calls awaiting execution. See ``AIResponse/toolCalls``.
     public let toolCalls: [ToolCall]?
     public let provider: ProviderID
 

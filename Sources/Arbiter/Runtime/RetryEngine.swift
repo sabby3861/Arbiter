@@ -51,13 +51,16 @@ struct RetryEngine: Sendable {
     func isRetryable(_ error: any Error) -> Bool {
         if let swiftAIError = error as? ArbiterError {
             switch swiftAIError {
-            case .networkError, .timeout, .rateLimited, .overloaded:
+            // .busy is Apple FM's concurrentRequests: the in-flight generation finishes
+            // shortly, so the same request succeeds on a retry.
+            case .networkError, .timeout, .rateLimited, .overloaded, .busy:
                 return true
             case .httpError(let statusCode, _):
                 return statusCode == 429 || statusCode == 500 || statusCode == 502 || statusCode == 503
             case .authenticationFailed, .invalidRequest, .modelNotFound, .contentFiltered,
                  .budgetExceeded, .dailyLimitExceeded, .deviceNotCapable, .decodingFailed,
-                 .keychainError, .providerUnavailable, .allProvidersFailed:
+                 .keychainError, .providerUnavailable, .allProvidersFailed,
+                 .contextWindowExceeded, .refused, .unsupportedLanguage:
                 return false
             }
         }

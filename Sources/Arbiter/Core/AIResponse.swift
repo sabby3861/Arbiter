@@ -10,6 +10,13 @@ public struct AIResponse: Sendable, Equatable {
     public let role: Role
     public let model: String
     public let provider: ProviderID
+    /// Tool calls the model made this turn.
+    ///
+    /// For the cloud providers these are calls *for the caller to execute*, paired with
+    /// `FinishReason.toolCall`. Apple Foundation Models runs its tools inside the session
+    /// instead, so there they are a record of calls that have already run and the turn is
+    /// `.complete` — an agent loop should branch on `finishReason`, not on this being
+    /// non-empty, or it will re-execute what the device already did.
     public let toolCalls: [ToolCall]
     public let usage: TokenUsage?
     public let finishReason: FinishReason?
