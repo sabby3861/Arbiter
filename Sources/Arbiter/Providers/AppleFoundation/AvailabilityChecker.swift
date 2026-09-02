@@ -9,26 +9,29 @@ private let logger = Logger(subsystem: "com.arbiter", category: "AvailabilityChe
 /// Checks whether Apple Foundation Models are available on the current device.
 public struct AvailabilityChecker: Sendable {
 
-    /// Check if Apple Foundation Models can be used right now.
-    public static func isAppleFoundationAvailable() async -> Bool {
+    /// Availability, with the reason attached when the answer is no.
+    ///
+    /// Prefer this over the two derived helpers below: `.modelNotReady` is worth retrying
+    /// and the rest are not, which a `Bool` cannot say and a `String` can only imply.
+    public static func availability() async -> AppleFMAvailability {
         #if canImport(FoundationModels)
         if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-            return await FoundationModelsAvailabilityBridge.checkAvailability()
+            return await FoundationModelsAvailabilityBridge.availability()
         }
+        return .unavailable(.osTooOld)
+        #else
+        return .unavailable(.frameworkNotLinked)
         #endif
-        return false
+    }
+
+    /// Check if Apple Foundation Models can be used right now.
+    public static func isAppleFoundationAvailable() async -> Bool {
+        await availability().isAvailable
     }
 
     /// Returns a human-readable reason if Apple Foundation Models are unavailable.
     public static func unavailableReason() async -> String {
-        #if canImport(FoundationModels)
-        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-            return await FoundationModelsAvailabilityBridge.detailedReason()
-        }
-        return "Apple Foundation Models requires iOS 26+ / macOS 26+ / visionOS 26+"
-        #else
-        return "FoundationModels framework is not available on this platform"
-        #endif
+        await availability().message
     }
 }
 
@@ -37,38 +40,45 @@ import FoundationModels
 
 @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 enum FoundationModelsAvailabilityBridge {
-    static func checkAvailability() async -> Bool {
-        let availability = SystemLanguageModel.default.availability
-        switch availability {
+    /// The one place the SDK's availability enum is read. Everything above this translates
+    /// Arbiter's mirror instead, and so compiles and is tested off-platform.
+    static func availability() async -> AppleFMAvailability {
+        switch SystemLanguageModel.default.availability {
         case .available:
-            return true
-        case .unavailable:
-            return false
-        @unknown default:
-            logger.warning("Unknown Apple FM availability state")
-            return false
-        }
-    }
-
-    static func detailedReason() async -> String {
-        let availability = SystemLanguageModel.default.availability
-        switch availability {
-        case .available:
-            return "Available"
+            return .available
         case .unavailable(let reason):
             switch reason {
             case .deviceNotEligible:
-                return "This device does not support Apple Intelligence"
+                return .unavailable(.deviceNotEligible)
             case .appleIntelligenceNotEnabled:
-                return "Apple Intelligence is not enabled. Enable it in Settings > Apple Intelligence & Siri"
+                return .unavailable(.appleIntelligenceNotEnabled)
             case .modelNotReady:
-                return "The on-device model is still downloading or preparing"
+                return .unavailable(.modelNotReady)
             @unknown default:
-                return "Apple Foundation Models are not available"
+                logger.warning("Unknown Apple FM unavailability reason")
+                return .unavailable(.unknown)
             }
         @unknown default:
-            return "Apple Foundation Models are not available"
+            logger.warning("Unknown Apple FM availability state")
+            return .unavailable(.unknown)
         }
+    }
+
+    /// The model reports the languages it was trained on, and rejects a prompt in any
+    /// other one at generation time. Exposed here so `AppleFoundationProvider` can offer a
+    /// proactive check without naming a `FoundationModels` type in its own signature.
+    static func supportsLocale(_ locale: Locale, options: AppleFMOptions) -> Bool {
+        guard let model = try? FMBridge.model(for: options) else {
+            // The model could not even be built — an adapter that will not load. That is a
+            // provider-level failure with its own error, and reporting it as an unsupported
+            // language here would mislabel it, so the check abstains.
+            return true
+        }
+        return model.supportsLocale(locale)
+    }
+
+    static var supportedLanguages: Set<Locale.Language> {
+        SystemLanguageModel.default.supportedLanguages
     }
 }
 #endif
