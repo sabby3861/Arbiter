@@ -2,6 +2,34 @@
 
 Arbiter supports tool calling (function calling) across cloud providers, letting the AI invoke your Swift functions.
 
+There are two ways to use it. `run(_:tools:)` runs the whole exchange for you — it
+sends the conversation, executes the tools the model calls, feeds the results back
+and repeats until it answers:
+
+```swift
+let weather = FunctionTool(
+    name: "get_weather",
+    description: "Get current weather for a city",
+    inputSchema: .object([
+        "type": .string("object"),
+        "properties": .object(["city": .object(["type": .string("string")])]),
+        "required": .array([.string("city")]),
+    ])
+) { arguments, _ in
+    guard case .object(let fields) = arguments,
+          case .string(let city)? = fields["city"] else { return "Unknown city" }
+    return lookupWeather(city: city)
+}
+
+let result = try await ai.run("What's the weather in London?", tools: [weather])
+print(result.content)
+```
+
+The rest of this guide covers the manual pattern — `generate`/`chat` with
+`RequestOptions(tools:)` — which is what you want when your app drives the loop
+itself. See the README's Tool Execution section for concurrency, per-tool
+timeouts and approval.
+
 ## Quick Start
 
 ```swift
@@ -91,18 +119,20 @@ print(response.content) // Final answer comparing both cities
 
 | Provider | Tool Calling | Notes |
 |----------|-------------|-------|
-| Anthropic | Yes | Definitions, parallel calls, streamed call arguments and multi-round history. You run the tools yourself — there is no execution loop. |
-| OpenAI | Yes | Definitions, parallel calls, streamed call arguments and multi-round history on Chat Completions; the opt-in Responses transport maps calls and results but does not stream. You run the tools yourself — there is no execution loop. |
-| Gemini | Yes | Full support via function declarations |
+| Anthropic | Yes | Definitions, parallel calls, streamed call arguments and multi-round history, with `run(_:tools:)` executing the loop. |
+| OpenAI | Yes | Definitions, parallel calls, streamed call arguments and multi-round history on Chat Completions, with `run(_:tools:)` executing the loop; the opt-in Responses transport maps calls and results but does not stream. |
+| Gemini | Partial | Definitions and non-streaming `functionCall` parsing; calls are not surfaced while streaming, so `runStream` cannot drive a tool loop here. |
 | Ollama | No | Not supported by Ollama API |
 | MLX | No | On-device models lack tool support |
-| Apple FM | Yes, differently | The model calls tools *inside* `respond()`, so this guide's pattern does not apply: bind each definition to an executor in `AppleFMOptions.tools` and select the provider with `RequestOptions(provider: .appleFoundation)`. The turn always finishes `.complete`, never `.toolCall`, and `response.toolCalls` records what already ran. `capabilities.supportsToolCalling` reports `false` so the router does not send tool requests to a provider whose bindings it cannot see. |
+| Apple FM | Yes, differently | The model calls tools *inside* `respond()`, so this guide's pattern does not apply: bind each definition to an executor in `AppleFMOptions.tools` and select the provider with `RequestOptions(provider: .appleFoundation)`. The turn always finishes `.complete`, never `.toolCall`, and `response.toolCalls` records what already ran. `capabilities.supportsToolCalling` reports `false` so the router scores tool requests away from a provider whose bindings it cannot see; `run(_:tools:)` binds them for you, so a run that does land here works and finishes in one round. |
 
-The Smart Router automatically considers tool calling support when routing.
-If your request includes tools, providers without tool support are disqualified —
-Apple FM included, since the router cannot tell whether that request's tools have
-executors bound. Reach it with `RequestOptions(provider: .appleFoundation)`, which
-bypasses capability matching.
+The Smart Router considers tool calling support when routing: a request carrying
+tools zeroes the capability term of any provider reporting `supportsToolCalling ==
+false`, which pushes it below providers that report `true` without removing it from
+the running — a lone on-device provider can still be chosen. Apple FM reports
+`false` because the router cannot tell whether that request's tools have executors
+bound. Use `RequestOptions(provider: .appleFoundation)` to reach it deliberately,
+which bypasses capability matching entirely.
 
 ## Tips
 

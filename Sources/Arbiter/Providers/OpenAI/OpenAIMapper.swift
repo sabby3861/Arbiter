@@ -338,6 +338,10 @@ private extension OpenAIMapper {
             logger.error("Dropping document content: unsupported by this provider")
             return []
 
+        case .thinking:
+            // This transport has no block for replaying another model's reasoning.
+            return []
+
         case .toolCalls(let calls):
             return calls.isEmpty ? [] : [assistantToolCallMessage(content: nil, calls: calls)]
 

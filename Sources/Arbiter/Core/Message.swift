@@ -49,6 +49,9 @@ public enum MessageContent: Sendable, Equatable {
     case document(DocumentSource)
     case toolCalls([ToolCall])
     case toolResults([ToolResult])
+    /// The model's own reasoning for an assistant turn, kept whole so the turn can be
+    /// replayed. See ``ThinkingBlock``.
+    case thinking([ThinkingBlock])
     case mixed([MessageContent])
 
     /// Extract plain text content, if available
@@ -100,6 +103,51 @@ public enum MessageContent: Sendable, Equatable {
         case .mixed(let parts): parts.flatMap(\.allDocuments)
         default: []
         }
+    }
+
+    /// Every thinking block carried by this content, including those nested in `.mixed`,
+    /// in the order they appear.
+    public var allThinking: [ThinkingBlock] {
+        switch self {
+        case .thinking(let blocks): blocks
+        case .mixed(let parts): parts.flatMap(\.allThinking)
+        default: []
+        }
+    }
+}
+
+/// A block of the model's own reasoning, as the provider returned it.
+///
+/// Kept whole rather than flattened to text because replaying it needs more than the
+/// words: Anthropic stamps each thinking block with an opaque ``signature`` and rejects a
+/// tool-use conversation whose thinking turn comes back without it, and redacts some
+/// blocks entirely into ``redactedData`` that must also be sent back untouched.
+public struct ThinkingBlock: Sendable, Equatable, Codable {
+    /// The readable reasoning. Empty for a redacted block.
+    public let text: String
+    /// The provider's opaque signature for this block, to be replayed unchanged.
+    public let signature: String?
+    /// The provider's encrypted stand-in for reasoning it chose not to show.
+    public let redactedData: String?
+
+    /// Whether the provider redacted this block's contents.
+    public var isRedacted: Bool { redactedData != nil }
+
+    public init(text: String, signature: String? = nil) {
+        self.text = text
+        self.signature = signature
+        self.redactedData = nil
+    }
+
+    /// A block the provider returned encrypted.
+    public static func redacted(data: String) -> ThinkingBlock {
+        ThinkingBlock(text: "", signature: nil, redactedData: data)
+    }
+
+    private init(text: String, signature: String?, redactedData: String?) {
+        self.text = text
+        self.signature = signature
+        self.redactedData = redactedData
     }
 }
 
@@ -193,7 +241,8 @@ public struct ToolDefinition: Sendable, Equatable, Codable {
 
 extension MessageContent: Codable {
     enum CodingKeys: String, CodingKey {
-        case type, text, image, document, toolCall, toolResult, toolCalls, toolResults, parts
+        case type, text, image, document, toolCall, toolResult, toolCalls, toolResults
+        case thinking, parts
     }
 
     public init(from decoder: Decoder) throws {
@@ -210,6 +259,8 @@ extension MessageContent: Codable {
             self = .toolCalls(try container.decode([ToolCall].self, forKey: .toolCalls))
         case "toolResults":
             self = .toolResults(try container.decode([ToolResult].self, forKey: .toolResults))
+        case "thinking":
+            self = .thinking(try container.decode([ThinkingBlock].self, forKey: .thinking))
         // Payloads written before parallel tool calls were modelled.
         case "toolCall":
             self = .toolCalls([try container.decode(ToolCall.self, forKey: .toolCall)])
@@ -243,6 +294,9 @@ extension MessageContent: Codable {
         case .toolResults(let results):
             try container.encode("toolResults", forKey: .type)
             try container.encode(results, forKey: .toolResults)
+        case .thinking(let blocks):
+            try container.encode("thinking", forKey: .type)
+            try container.encode(blocks, forKey: .thinking)
         case .mixed(let parts):
             try container.encode("mixed", forKey: .type)
             try container.encode(parts, forKey: .parts)

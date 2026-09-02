@@ -44,9 +44,9 @@ struct IntegrationTests {
         }
     }
 
-    @Test func maxRetriesLimitsFallbackAttempts() async throws {
+    @Test func maxFallbackProvidersLimitsAttempts() async throws {
         var policy = RoutingPolicy.smart
-        policy.maxRetries = 0
+        policy.maxFallbackProviders = 0
 
         let ai = Arbiter {
             $0.cloud(MockProvider(
@@ -68,7 +68,7 @@ struct IntegrationTests {
 
         var policy = RoutingPolicy(strategy: .priority([.anthropic, .openAI, .mlx]))
         policy.fallbackEnabled = true
-        policy.maxRetries = 3
+        policy.maxFallbackProviders = 3
 
         let ai = Arbiter {
             $0.cloud(primary)

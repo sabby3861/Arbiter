@@ -33,7 +33,11 @@ public enum RoutingStrategy: Sendable {
 public struct RoutingPolicy: Sendable {
     public var strategy: RoutingStrategy
     public var fallbackEnabled: Bool
-    public var maxRetries: Int
+    /// How many *additional* providers may be tried after the first one fails.
+    ///
+    /// Named for what it does: nothing here retries the same provider — that is
+    /// `Configuration.retry(maxAttempts:)`, which applies before failing over.
+    public var maxFallbackProviders: Int
     public var forceLocal: Bool
     public var forceCloud: Bool
     public var privacyTags: Set<RequestTag>
@@ -41,17 +45,46 @@ public struct RoutingPolicy: Sendable {
     public init(
         strategy: RoutingStrategy = .smart,
         fallbackEnabled: Bool = true,
-        maxRetries: Int = 2,
+        maxFallbackProviders: Int = 2,
         forceLocal: Bool = false,
         forceCloud: Bool = false,
         privacyTags: Set<RequestTag> = [.private, .health, .financial, .personal]
     ) {
         self.strategy = strategy
         self.fallbackEnabled = fallbackEnabled
-        self.maxRetries = maxRetries
+        self.maxFallbackProviders = maxFallbackProviders
         self.forceLocal = forceLocal
         self.forceCloud = forceCloud
         self.privacyTags = privacyTags
+    }
+
+    /// The count of extra providers to try after a failure.
+    ///
+    /// Renamed to ``maxFallbackProviders``: it never controlled retries against the same
+    /// provider, which is what its name implied.
+    @available(*, deprecated, renamed: "maxFallbackProviders")
+    public var maxRetries: Int {
+        get { maxFallbackProviders }
+        set { maxFallbackProviders = newValue }
+    }
+
+    @available(*, deprecated, message: "Use init(strategy:fallbackEnabled:maxFallbackProviders:forceLocal:forceCloud:privacyTags:)")
+    public init(
+        strategy: RoutingStrategy = .smart,
+        fallbackEnabled: Bool = true,
+        maxRetries: Int,
+        forceLocal: Bool = false,
+        forceCloud: Bool = false,
+        privacyTags: Set<RequestTag> = [.private, .health, .financial, .personal]
+    ) {
+        self.init(
+            strategy: strategy,
+            fallbackEnabled: fallbackEnabled,
+            maxFallbackProviders: maxRetries,
+            forceLocal: forceLocal,
+            forceCloud: forceCloud,
+            privacyTags: privacyTags
+        )
     }
 }
 

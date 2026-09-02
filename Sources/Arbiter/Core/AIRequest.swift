@@ -135,19 +135,49 @@ enum TokenEstimator {
 
     /// Estimate token count across an array of messages.
     ///
-    /// Non-text content (images, tool calls) contributes a minimum token
-    /// estimate to avoid returning 0 for image-heavy or tool-heavy requests.
+    /// Everything a provider bills as text counts: the message's words, the JSON of a tool
+    /// call, the text of a tool result, and replayed thinking blocks. A tool conversation
+    /// is mostly `.mixed` turns, and counting only `MessageContent.text` — which is `nil`
+    /// for `.mixed` — would have valued an eight-round agent run at almost nothing, and
+    /// with it the budget guard and the context-window check that both read this number.
+    ///
+    /// Content with no text at all (an image, a document) contributes a flat minimum
+    /// rather than zero.
     static func estimateTokens(for messages: [Message]) -> Int {
         var estimate = 0
         for message in messages {
-            if let text = message.content.text {
-                estimate += max(Int(Double(text.count) * tokensPerCharacter), 1)
-            } else {
-                // Non-text messages (images, tool calls) still consume tokens.
-                // Use a conservative minimum per message.
-                estimate += 100
-            }
+            let text = billableText(of: message.content)
+            estimate += text.isEmpty
+                ? 100
+                : max(Int(Double(text.count) * tokensPerCharacter), 1)
         }
         return estimate
+    }
+
+    /// The text of a message as a provider would see it on the wire.
+    static func billableText(of content: MessageContent) -> String {
+        switch content {
+        case .text(let text):
+            text
+        case .image, .document:
+            // Binary content is not text; the caller applies its own minimum.
+            ""
+        case .toolCalls(let calls):
+            calls.map { "\($0.name)\(canonical($0.arguments))" }.joined(separator: "\n")
+        case .toolResults(let results):
+            results.map(\.content).joined(separator: "\n")
+        case .thinking(let blocks):
+            // Redacted payloads are billed too, and are the same order of size.
+            blocks.map { $0.redactedData ?? $0.text }.joined(separator: "\n")
+        case .mixed(let parts):
+            parts.map { billableText(of: $0) }.filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+    }
+
+    private static func canonical(_ arguments: JSONValue) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(arguments) else { return "" }
+        return String(decoding: data, as: UTF8.self)
     }
 }

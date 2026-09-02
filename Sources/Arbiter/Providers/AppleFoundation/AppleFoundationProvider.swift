@@ -67,8 +67,11 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
             // `CapabilityMatcher` — so a `true` here steers every tool request on-device,
             // where an unbound tool throws `invalidRequest` and stops the fallback chain
             // instead of falling through to a provider that can serve it. Tool calling is
-            // fully available today through explicit routing with bindings supplied; the
-            // flag flips when the runtime's tool-execution loop can bind them itself.
+            // fully available today, and `Arbiter.run(_:tools:)` supplies the bindings for
+            // you. The flag still cannot become `true`: routing happens before either kind
+            // of request is distinguishable, so a `true` would also steer a bare
+            // `generate(options: .init(tools:))` — which carries no executors — on-device,
+            // where it throws instead of falling through to a provider that can serve it.
             supportsToolCalling: false,
             supportsImageInput: false,
             costPerMillionInputTokens: nil,
