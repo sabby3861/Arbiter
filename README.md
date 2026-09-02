@@ -213,8 +213,8 @@ for estimate in estimates {
 ┌─────────────────────────────────────────────────────────┐
 │                  Intelligent Router                     │
 │  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐   │
-│  │ Request  │ │Capability│ │ Provider │ │Environment │  │
-│  │ Analyser │ │ Matcher  │ │ Tracker  │ │  Checks    │  │
+│  │ Request │ │Capability│ │ Provider │ │Environment │   │
+│  │ Analyser│ │ Matcher  │ │ Tracker  │ │  Checks    │   │
 │  └─────────┘ └──────────┘ └──────────┘ └────────────┘   │
 └──────┬──────────────┬──────────────┬───────────────┬────┘
        │              │              │               │
