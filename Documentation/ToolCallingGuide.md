@@ -92,7 +92,7 @@ print(response.content) // Final answer comparing both cities
 | Provider | Tool Calling | Notes |
 |----------|-------------|-------|
 | Anthropic | Yes | Definitions, parallel calls, streamed call arguments and multi-round history. You run the tools yourself — there is no execution loop. |
-| OpenAI | Yes | Full support via function calling API |
+| OpenAI | Yes | Definitions, parallel calls, streamed call arguments and multi-round history on Chat Completions; the opt-in Responses transport maps calls and results but does not stream. You run the tools yourself — there is no execution loop. |
 | Gemini | Yes | Full support via function declarations |
 | Ollama | No | Not supported by Ollama API |
 | MLX | No | On-device models lack tool support |

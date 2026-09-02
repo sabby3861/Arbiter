@@ -50,7 +50,7 @@ struct UnifiedResponseTests {
         let anthropicMapper = AnthropicMapper(defaultModel: .claudeSonnet5)
         let ollamaMapper = OllamaMapper(defaultModel: "llama3.2")
 
-        var accOpenAI = ""
+        var openAIState = OpenAIStreamState()
         var accGemini = ""
         var accOllama = ""
 
@@ -58,7 +58,7 @@ struct UnifiedResponseTests {
             """
             {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}
             """,
-            accumulated: &accOpenAI
+            state: &openAIState
         )
 
         let geminiChunk = geminiMapper.parseStreamEvent(
