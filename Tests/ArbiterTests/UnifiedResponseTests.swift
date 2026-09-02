@@ -51,7 +51,7 @@ struct UnifiedResponseTests {
         let ollamaMapper = OllamaMapper(defaultModel: "llama3.2")
 
         var openAIState = OpenAIStreamState()
-        var accGemini = ""
+        var geminiState = GeminiStreamState()
         var accOllama = ""
 
         let openAIChunk = openAIMapper.parseStreamEvent(
@@ -65,7 +65,7 @@ struct UnifiedResponseTests {
             """
             {"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"}}]}
             """,
-            accumulated: &accGemini
+            state: &geminiState
         )
 
         var anthropicState = AnthropicStreamState()

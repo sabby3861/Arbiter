@@ -121,7 +121,7 @@ print(response.content) // Final answer comparing both cities
 |----------|-------------|-------|
 | Anthropic | Yes | Definitions, parallel calls, streamed call arguments and multi-round history, with `run(_:tools:)` executing the loop. |
 | OpenAI | Yes | Definitions, parallel calls, streamed call arguments and multi-round history on Chat Completions, with `run(_:tools:)` executing the loop; the opt-in Responses transport maps calls and results but does not stream. |
-| Gemini | Partial | Definitions and non-streaming `functionCall` parsing; calls are not surfaced while streaming, so `runStream` cannot drive a tool loop here. |
+| Gemini | Yes | Definitions, parallel calls, streamed `functionCall` parts and multi-round history, with `run(_:tools:)` executing the loop. Gemini has no tool-call finish reason of its own — a turn asking for a function finishes `STOP` — so Arbiter reports one that carries calls as `.toolCall`. Replayed turns keep each call's `id` and its `thoughtSignature`, which the API requires back unchanged. |
 | Ollama | No | Not supported by Ollama API |
 | MLX | No | On-device models lack tool support |
 | Apple FM | Yes, differently | The model calls tools *inside* `respond()`, so this guide's pattern does not apply: bind each definition to an executor in `AppleFMOptions.tools` and select the provider with `RequestOptions(provider: .appleFoundation)`. The turn always finishes `.complete`, never `.toolCall`, and `response.toolCalls` records what already ran. `capabilities.supportsToolCalling` reports `false` so the router scores tool requests away from a provider whose bindings it cannot see; `run(_:tools:)` binds them for you, so a run that does land here works and finishes in one round. |

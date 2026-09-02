@@ -10,8 +10,11 @@ import Foundation
 /// restricted subset of JSON Schema, and each subset differs — so parsing lives
 /// here once and each provider applies its own pass on top.
 ///
-/// Shared between providers on purpose: OpenAI strict mode and Gemini's
-/// OpenAPI subset both start from the same parse step.
+/// Shared between providers on purpose: OpenAI strict mode, Anthropic's
+/// `output_config.format` and Gemini's `responseFormat` all start from the same
+/// parse step and then diverge — strict mode requires every property, the other
+/// two allow optional ones; Anthropic rejects an unsupported keyword where
+/// Gemini ignores it.
 enum JSONSchemaNormalizer {
     /// Parse a schema string into a JSON object.
     ///
@@ -179,6 +182,173 @@ enum JSONSchemaNormalizer {
             return ["anyOf": [["$ref": reference], ["type": "null"]]]
         }
         // A subschema constraining nothing (`{}`) already admits null.
+        return object
+    }
+}
+
+// MARK: - Gemini
+
+extension JSONSchemaNormalizer {
+    /// Metadata and validation keywords Gemini's structured-output subset does
+    /// not implement.
+    ///
+    /// The API ignores what it does not understand rather than rejecting it, so
+    /// dropping these changes nothing on the wire — but it keeps the request
+    /// body honest about what is actually being enforced, and keeps a caller
+    /// from believing a `pattern` constrains the answer when it does not.
+    /// Verified 2 September 2026 against
+    /// https://ai.google.dev/gemini-api/docs/generate-content/structured-output.
+    private static let geminiUnsupportedKeywords = [
+        "$schema", "$id", "$comment", "pattern", "patternProperties",
+    ]
+
+    /// Rewrite a schema into the subset Gemini's structured output supports.
+    ///
+    /// Unlike OpenAI's strict mode this is a *subtractive* pass: Gemini accepts
+    /// optional properties, so which properties are required is left exactly as
+    /// the caller wrote it, and `additionalProperties` — supported since the
+    /// `responseFormat` field replaced the OpenAPI-subset `responseSchema` — is
+    /// passed through rather than forced.
+    ///
+    /// This is the *response* schema's dialect only. A tool's `parameters` is a
+    /// different field with a different type (`Schema`, the OpenAPI subset),
+    /// which does implement `pattern` and the length bounds this drops — so a
+    /// tool schema must not be run through here.
+    static func geminiSchema(_ schema: [String: Any]) -> [String: Any] {
+        geminified(schema) as? [String: Any] ?? schema
+    }
+
+    private static func geminified(_ node: Any) -> Any {
+        guard var object = node as? [String: Any] else {
+            if let array = node as? [Any] { return array.map { geminified($0) } }
+            return node
+        }
+        for keyword in geminiUnsupportedKeywords {
+            object.removeValue(forKey: keyword)
+        }
+        if let branches = object["allOf"] as? [Any] {
+            object["allOf"] = branches.map { geminified($0) }
+        }
+        return descend(object, using: geminified)
+    }
+}
+
+// MARK: - Anthropic
+
+extension JSONSchemaNormalizer {
+    /// Keywords Anthropic's structured outputs reject with an HTTP 400.
+    ///
+    /// Numeric constraints and the string *length* bounds are unsupported
+    /// outright; `minItems` is supported only for the values 0 and 1, so it is
+    /// handled separately. `pattern` is deliberately absent from this list:
+    /// Anthropic documents which regex features it implements, so a pattern is
+    /// enforced rather than rejected and dropping it would silently loosen the
+    /// schema.
+    ///
+    /// Keywords the docs mention neither way — `oneOf`, `not`, `if`/`then` —
+    /// are passed through untouched. `JSONSchemaBuilder` never emits them, so
+    /// they only arrive in a schema a caller pasted, and a 400 naming the
+    /// keyword tells that caller more than quietly deleting a constraint they
+    /// wrote.
+    /// Verified 2 September 2026 against
+    /// https://platform.claude.com/docs/en/build-with-claude/structured-outputs.
+    private static let anthropicUnsupportedKeywords = [
+        "$schema", "$id", "$comment",
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+        "minLength", "maxLength",
+        "maxItems", "uniqueItems",
+    ]
+
+    /// The string `format` values Anthropic's structured outputs implement.
+    private static let anthropicSupportedFormats: Set<String> = [
+        "date-time", "time", "date", "duration",
+        "email", "hostname", "uri", "ipv4", "ipv6", "uuid",
+    ]
+
+    /// Rewrite a schema into the subset Anthropic's `output_config.format` accepts.
+    ///
+    /// Anthropic differs from OpenAI strict mode in the one way that matters
+    /// most: optional properties are legal, so `required` is left as written
+    /// rather than widened to every property. What it does insist on is
+    /// `additionalProperties: false` on every object, and that no unsupported
+    /// constraint keyword appears at all — those are a 400, not a silent
+    /// ignore, which is why this pass removes them instead of trusting the API
+    /// to overlook them.
+    static func anthropicSchema(_ schema: [String: Any]) -> [String: Any] {
+        anthropicised(schema) as? [String: Any] ?? schema
+    }
+
+    /// - Parameter closeObjects: whether this node may be given
+    ///   `additionalProperties: false`. False for an `allOf` branch, whose
+    ///   properties are merged with its siblings': closing a branch would
+    ///   forbid what the others contribute and leave the composition
+    ///   unsatisfiable. Its subschemas are closed as usual.
+    private static func anthropicised(_ node: Any, closeObjects: Bool = true) -> Any {
+        guard var object = node as? [String: Any] else {
+            if let array = node as? [Any] { return array.map { anthropicised($0) } }
+            return node
+        }
+
+        for keyword in anthropicUnsupportedKeywords {
+            object.removeValue(forKey: keyword)
+        }
+        // Only `minItems: 0` and `minItems: 1` are implemented; any other value
+        // is rejected rather than clamped, because clamping would quietly
+        // loosen a constraint the caller asked for.
+        if let minItems = object["minItems"] as? Int, minItems > 1 {
+            object.removeValue(forKey: "minItems")
+        }
+        if let format = object["format"] as? String, !anthropicSupportedFormats.contains(format) {
+            object.removeValue(forKey: "format")
+        }
+        // Anything other than `false` is refused, so an explicit map type is
+        // closed wherever it appears — including inside an `allOf` branch,
+        // where *adding* a closure would be wrong but leaving a map type would
+        // still be a 400.
+        if object["additionalProperties"] is [String: Any] {
+            object["additionalProperties"] = false
+        } else if closeObjects, isObjectTyped(object) || object["properties"] != nil {
+            object["additionalProperties"] = false
+        }
+        if let branches = object["allOf"] as? [Any] {
+            object["allOf"] = branches.map { anthropicised($0, closeObjects: false) }
+        }
+        return descend(object, using: { anthropicised($0) })
+    }
+}
+
+// MARK: - Shared recursion
+
+private extension JSONSchemaNormalizer {
+    /// Apply `transform` to every subschema of `object`, leaving its own
+    /// keywords alone.
+    ///
+    /// The keys walked here are the ones whose values are schemas rather than
+    /// constraint values: descending into anything else would rewrite data the
+    /// caller meant literally (an `enum` of strings, say).
+    static func descend(_ object: [String: Any], using transform: (Any) -> Any) -> [String: Any] {
+        var object = object
+        for key in ["$defs", "definitions", "properties"] {
+            if let members = object[key] as? [String: Any] {
+                object[key] = members.mapValues { transform($0) }
+            }
+        }
+        // `allOf` is left to the caller: its branches are merged rather than
+        // standalone, so a pass that adds keywords has to treat them
+        // differently from the alternatives in `anyOf`/`oneOf`.
+        for key in ["anyOf", "oneOf", "prefixItems"] {
+            if let branches = object[key] as? [Any] {
+                object[key] = branches.map { transform($0) }
+            }
+        }
+        if let items = object["items"] {
+            object["items"] = transform(items)
+        }
+        // A schema-valued `additionalProperties` is a subschema too; a boolean
+        // is not, and `transform` returns it unchanged.
+        if let additional = object["additionalProperties"], additional is [String: Any] {
+            object["additionalProperties"] = transform(additional)
+        }
         return object
     }
 }
