@@ -217,6 +217,11 @@ private extension OpenAIResponsesMapper {
             logger.error("Dropping document content: unsupported by this provider")
             return []
 
+        case .thinking:
+            // Reasoning items on this transport are the provider's own, referenced by id;
+            // another model's thinking blocks have no representation here.
+            return []
+
         case .toolCalls(let calls):
             return calls.map { functionCallItem($0) }
 

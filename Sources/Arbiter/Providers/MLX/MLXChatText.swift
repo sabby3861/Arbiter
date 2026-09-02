@@ -22,6 +22,9 @@ enum MLXChatText {
             return [text]
         case .image, .document:
             return []
+        case .thinking:
+            // A local model is not given another model's reasoning to continue from.
+            return []
         case .toolCalls(let calls):
             return calls.map { render($0) }
         case .toolResults(let results):

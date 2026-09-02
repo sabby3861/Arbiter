@@ -106,7 +106,7 @@ struct AnthropicImageResolver: Sendable {
                 resolved.append(try await resolve(part))
             }
             return .mixed(resolved)
-        case .text, .image, .document, .toolCalls, .toolResults:
+        case .text, .image, .document, .toolCalls, .toolResults, .thinking:
             return content
         }
     }

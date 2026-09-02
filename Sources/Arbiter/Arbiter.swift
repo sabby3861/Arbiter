@@ -37,6 +37,8 @@ public final class Arbiter: Sendable {
     private let responseValidator: ResponseValidator?
     private let structuredOutputHandler = StructuredOutputHandler()
     private let analyser = RequestAnalyser()
+    /// Tool calls suspended awaiting a human decision, shared by every run on this instance.
+    let approvals = ToolApprovalRegistry()
 
     /// Registered providers, exposed for UI components like `ProviderPicker`
     public var registeredProviders: [any AIProvider] { providers }
@@ -96,19 +98,19 @@ public final class Arbiter: Sendable {
     }
 
     /// Generate a response and decode it into a typed Swift value.
+    ///
+    /// Providers that can constrain decoding to a schema are sent one derived from `T`;
+    /// the rest are asked for JSON in the prompt, with `example` if you supply one. Either
+    /// way the answer is decoded into `T`.
     public func generate<T: Codable & Sendable>(
         _ prompt: String,
         as type: T.Type,
         example: T? = nil,
         options: RequestOptions? = nil
     ) async throws -> T {
-        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(
-            for: type, userPrompt: prompt, example: example
+        try await generateStructured(
+            messages: [.user(prompt)], as: type, example: example, options: options
         )
-        var mergedOptions = options ?? RequestOptions()
-        mergedOptions.responseFormat = .json
-        let response = try await performGenerate(messages: [.user(structuredPrompt)], options: mergedOptions)
-        return try structuredOutputHandler.decode(response.content, as: type)
     }
 
     /// Stream a response from a simple text prompt
@@ -125,27 +127,17 @@ public final class Arbiter: Sendable {
     }
 
     /// Generate from messages and decode into a typed value.
+    ///
+    /// As ``generate(_:as:example:options:)``, keeping the conversation's history.
     public func chat<T: Codable & Sendable>(
         _ messages: [Message],
         as type: T.Type,
         example: T? = nil,
         options: RequestOptions? = nil
     ) async throws -> T {
-        guard let lastUserMessage = messages.last(where: { $0.role == .user }),
-              let promptText = lastUserMessage.content.text else {
-            throw ArbiterError.invalidRequest(reason: "No user message found for structured output")
-        }
-
-        let structuredPrompt = structuredOutputHandler.buildJSONPrompt(
-            for: type, userPrompt: promptText, example: example
+        try await generateStructured(
+            messages: messages, as: type, example: example, options: options
         )
-        var modifiedMessages = messages.dropLast(where: { $0.id == lastUserMessage.id })
-        modifiedMessages.append(.user(structuredPrompt))
-
-        var mergedOptions = options ?? RequestOptions()
-        mergedOptions.responseFormat = .json
-        let response = try await performGenerate(messages: modifiedMessages, options: mergedOptions)
-        return try structuredOutputHandler.decode(response.content, as: type)
     }
 
     /// Stream a response from a conversation history
@@ -233,8 +225,17 @@ public struct RetryConfiguration: Sendable {
     }
 }
 
-private extension Arbiter {
-    func performGenerate(messages: [Message], options: RequestOptions?) async throws -> AIResponse {
+extension Arbiter {
+    /// Send a request, falling back through the routing decision's candidates.
+    ///
+    /// `adapt` reshapes the request for the provider about to receive it. Fallback can move
+    /// a request between providers with very different capabilities, so the decision of
+    /// what to send belongs per candidate rather than once per request.
+    func performGenerate(
+        messages: [Message],
+        options: RequestOptions?,
+        adapt: (@Sendable (ProviderID, AIRequest) -> AIRequest)? = nil
+    ) async throws -> AIResponse {
         try Task.checkCancellation()
 
         guard !providers.isEmpty else {
@@ -250,13 +251,16 @@ private extension Arbiter {
 
         let providerOrder = buildProviderOrder(from: decision)
         var attempts: [(ProviderID, any Error & Sendable)] = []
-        let maxAttempts = routingPolicy.fallbackEnabled ? routingPolicy.maxRetries + 1 : 1
+        let policy = executionPolicy(options: options)
 
-        for providerID in providerOrder.prefix(maxAttempts) {
+        for providerID in providerOrder.prefix(policy.providerAttemptLimit) {
             guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
             let startTime = CFAbsoluteTimeGetCurrent()
             do {
-                let response = try await executeGenerate(request: request, provider: provider, options: options)
+                let providerRequest = adapt?(providerID, request) ?? request
+                let response = try await executeGenerate(
+                    request: providerRequest, provider: provider, options: options
+                )
                 let latency = CFAbsoluteTimeGetCurrent() - startTime
                 let detectedTask = decision.analysis?.detectedTask ?? .conversation
                 await router.performanceTracker.recordOutcome(
@@ -290,10 +294,16 @@ private extension Arbiter {
     func executeGenerate(
         request: AIRequest,
         provider: any AIProvider,
-        options: RequestOptions? = nil
+        options: RequestOptions? = nil,
+        allowQualityRetry: Bool = true
     ) async throws -> AIResponse {
         let processedRequest = try await applyRequestMiddleware(request)
         let reservation = try await reserveBudget(for: provider, request: processedRequest)
+        // A reservation is settled exactly once. Without this, a failure *after* the
+        // response was priced — a validation throw, or the quality retry throwing — would
+        // release the estimate a second time and understate what has been spent.
+        var settled = false
+        let policy = executionPolicy(options: options)
 
         let operation: @Sendable () async throws -> AIResponse = {
             try await withTaskCancellationHandler {
@@ -302,23 +312,30 @@ private extension Arbiter {
                 logger.debug("Generate cancelled for \(provider.id.rawValue)")
             }
         }
+        // The deadline belongs inside the retry, not around it: a request that timed out
+        // gets a fresh attempt with a fresh deadline, rather than one budget shared by all
+        // of them. Retry now runs whether or not fallback is enabled — the two are
+        // consecutive stages of `ExecutionPolicy`, not alternatives.
+        let attempt: @Sendable () async throws -> AIResponse = { [self] in
+            guard let timeout = policy.timeout else { return try await operation() }
+            return try await withTimeout(timeout, provider: provider.id) { try await operation() }
+        }
 
         do {
             let response: AIResponse
-            if let timeout = options?.timeout {
-                response = try await withTimeout(timeout, provider: provider.id) { try await operation() }
-            } else if let retryConfig, !routingPolicy.fallbackEnabled {
+            if let retry = policy.retry {
                 let engine = RetryEngine(
-                    maxRetries: retryConfig.maxAttempts - 1,
-                    baseDelay: retryConfig.baseDelay,
-                    maxDelay: retryConfig.maxDelay
+                    maxRetries: retry.maxAttempts - 1,
+                    baseDelay: retry.baseDelay,
+                    maxDelay: retry.maxDelay
                 )
-                response = try await engine.execute(operation: operation)
+                response = try await engine.execute(operation: attempt)
             } else {
-                response = try await operation()
+                response = try await attempt()
             }
 
             await finalizeCost(reservation: reservation, usage: response.usage, provider: provider)
+            settled = true
             let finalResponse = try await applyResponseMiddleware(response)
 
             if let validator = responseValidator {
@@ -334,38 +351,90 @@ private extension Arbiter {
                         reason: "Response failed validation: \(description)"
                     )
                 case .retryRecommended:
+                    // Routed back through this method so the retry gets the same timeout,
+                    // cancellation, budget reservation and cost tracking as the first
+                    // attempt. `allowQualityRetry` stops the recursion at one retry: the
+                    // second attempt is returned whatever its quality, and only an empty
+                    // or refused response throws.
+                    guard allowQualityRetry else { break }
                     logger.debug("Low quality response, retrying once")
-                    let retryReservation = try? await reserveBudget(
-                        for: provider, request: processedRequest
+                    return try await executeGenerate(
+                        request: request, provider: provider,
+                        options: options, allowQualityRetry: false
                     )
-                    let retryResponse = try await provider.generate(processedRequest)
-                    await finalizeCost(
-                        reservation: retryReservation,
-                        usage: retryResponse.usage,
-                        provider: provider
-                    )
-                    let processedRetry = try await applyResponseMiddleware(retryResponse)
-                    let retryResult = validator.validate(
-                        processedRetry, for: processedRequest, analysis: analysis
-                    )
-                    switch retryResult {
-                    case .valid, .truncated, .retryRecommended:
-                        return processedRetry
-                    case .empty, .refused:
-                        throw ArbiterError.contentFiltered(
-                            reason: "Response failed validation after retry: \(retryResult)"
-                        )
-                    }
                 }
             }
 
             return finalResponse
         } catch {
-            if let reservation {
+            if let reservation, !settled {
                 await spendingGuard?.finalizeReservation(reservation, actualCost: 0)
             }
             throw error
         }
+    }
+
+    /// Ask for a typed value, by schema where the provider can be constrained to one and by
+    /// prompt everywhere else.
+    ///
+    /// Both forms are prepared up front and chosen per provider, because fallback can hand
+    /// the request to a provider that would ignore a schema and answer in prose.
+    func generateStructured<T: Codable & Sendable>(
+        messages: [Message],
+        as type: T.Type,
+        example: T?,
+        options: RequestOptions?
+    ) async throws -> T {
+        guard let lastUserMessage = messages.last(where: { $0.role == .user }),
+              let promptText = lastUserMessage.content.text else {
+            throw ArbiterError.invalidRequest(reason: "No user message found for structured output")
+        }
+
+        let instruction = structuredOutputHandler.buildJSONPrompt(
+            for: type, userPrompt: promptText, example: example
+        )
+        var promptMessages = messages.dropLast(where: { $0.id == lastUserMessage.id })
+        promptMessages.append(.user(instruction))
+
+        // A type whose shape cannot be derived — an enum property is the usual reason —
+        // simply takes the prompt path everywhere.
+        let schema = try? JSONSchemaBuilder.schema(for: type)
+        if schema == nil {
+            logger.debug("No schema derived for \(String(describing: type)); using the prompt path")
+        }
+
+        var mergedOptions = options ?? RequestOptions()
+        mergedOptions.responseFormat = .json
+
+        let original = messages
+        let response = try await performGenerate(
+            messages: promptMessages,
+            options: mergedOptions
+        ) { providerID, request in
+            guard let schema, NativeStructuredOutput.supports(providerID) else { return request }
+            var native = request
+            // The schema constrains decoding, so the prompt keeps the caller's own wording
+            // rather than the instructions that stand in for a schema.
+            native.messages = original
+            native.responseFormat = .structured(schema: schema)
+            return native
+        }
+
+        // A refusal is the model declining, not malformed JSON, and saying so lets a caller
+        // handle it without parsing a decoding error's message.
+        if response.finishReason == .refusal {
+            throw ArbiterError.refused(response.provider, explanation: response.content)
+        }
+        return try structuredOutputHandler.decode(response.content, as: type)
+    }
+
+    /// The guards and recovery mechanisms this request runs under.
+    func executionPolicy(options: RequestOptions?) -> ExecutionPolicy {
+        ExecutionPolicy(
+            routingPolicy: routingPolicy,
+            retry: retryConfig,
+            timeout: options?.timeout
+        )
     }
 
     func withTimeout<T: Sendable>(
@@ -535,10 +604,10 @@ private extension Arbiter {
         continuation: AsyncThrowingStream<AIStreamChunk, Error>.Continuation
     ) async -> (any Error)? {
         let providerOrder = buildProviderOrder(from: decision)
-        let maxAttempts = routingPolicy.fallbackEnabled ? routingPolicy.maxRetries + 1 : 1
+        let policy = executionPolicy(options: nil)
         var lastError: (any Error)?
 
-        for providerID in providerOrder.prefix(maxAttempts) {
+        for providerID in providerOrder.prefix(policy.providerAttemptLimit) {
             guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
             do {
                 try await executeStream(

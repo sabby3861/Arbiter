@@ -139,6 +139,10 @@ private extension OllamaMapper {
             logger.error("Dropping document content: unsupported by this provider")
             return []
 
+        case .thinking:
+            // No wire representation: Ollama returns its own thinking text but takes none back.
+            return []
+
         case .toolCalls(let calls):
             return calls.isEmpty ? [] : [assistantToolCallMessage(text: "", calls: calls)]
 

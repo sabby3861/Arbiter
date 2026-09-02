@@ -136,7 +136,8 @@ struct AnthropicMapper: Sendable {
             usage: extractUsage(from: json),
             finishReason: mapStopReason(json["stop_reason"] as? String),
             reasoning: extractReasoning(from: json),
-            citations: extractCitations(from: json)
+            citations: extractCitations(from: json),
+            thinking: extractThinking(from: json)
         )
     }
 
@@ -452,6 +453,13 @@ extension AnthropicMapper {
         case .toolResults(let results):
             return results.isEmpty ? [] : [toolResultMessage(results: results, trailingBlocks: [])]
 
+        case .thinking(let blocks):
+            let thinkingBlocks = replayableThinkingBlocks(blocks, role: message.role)
+            guard !thinkingBlocks.isEmpty else { return [] }
+            var pending = PendingAnthropicMessage(role: role(for: message.role))
+            pending.blocks = thinkingBlocks
+            return [pending]
+
         case .mixed(let parts):
             return mixedMessages(parts, role: message.role)
         }
@@ -463,7 +471,10 @@ extension AnthropicMapper {
     /// turn is reshaped to satisfy that — including splitting into two messages
     /// when the caller put calls and results in the same turn.
     func mixedMessages(_ parts: [MessageContent], role messageRole: Role) -> [PendingAnthropicMessage] {
-        let plain = parts.flatMap { plainContentBlocks($0) }
+        // Thinking blocks are pulled out and put first whatever order the caller wrote
+        // them in: the API requires them to lead the assistant turn they belong to.
+        let thinking = replayableThinkingBlocks(parts.flatMap(\.allThinking), role: messageRole)
+        let plain = thinking + parts.flatMap { plainContentBlocks($0) }
         let calls = parts.flatMap(\.allToolCalls)
         let results = parts.flatMap(\.allToolResults)
 
@@ -497,8 +508,28 @@ extension AnthropicMapper {
             return [documentContentBlock(source)]
         case .mixed(let nested):
             return nested.flatMap { plainContentBlocks($0) }
-        case .toolCalls, .toolResults:
+        case .toolCalls, .toolResults, .thinking:
             return []
+        }
+    }
+
+    /// The thinking blocks that can legally go back on the wire.
+    ///
+    /// Only an assistant turn may carry them, and only a block the API can validate: a
+    /// `thinking` block is checked against its `signature`, so one that lost its signature
+    /// — a streamed turn, or history built by hand — is dropped rather than sent to be
+    /// rejected. `redacted_thinking` carries its own opaque payload and needs no signature.
+    func replayableThinkingBlocks(_ blocks: [ThinkingBlock], role: Role) -> [[String: Any]] {
+        guard role == .assistant else { return [] }
+        return blocks.compactMap { block in
+            if let data = block.redactedData {
+                return ["type": "redacted_thinking", "data": data]
+            }
+            guard let signature = block.signature, !signature.isEmpty else {
+                logger.notice("Dropping an unsigned thinking block: it cannot be replayed")
+                return nil
+            }
+            return ["type": "thinking", "thinking": block.text, "signature": signature]
         }
     }
 
@@ -666,6 +697,26 @@ extension AnthropicMapper {
             .compactMap { $0["thinking"] as? String }
             .filter { !$0.isEmpty }
         return thinking.isEmpty ? nil : thinking.joined(separator: "\n")
+    }
+
+    /// The thinking blocks as they arrived, signatures included.
+    ///
+    /// The signature is what makes a block replayable: a tool-use conversation with
+    /// thinking on has to send the assistant's thinking back unchanged, and the API
+    /// validates it against the signature.
+    func extractThinking(from json: [String: Any]) -> [ThinkingBlock] {
+        contentBlocks(from: json).compactMap { block in
+            switch block["type"] as? String {
+            case "thinking":
+                guard let text = block["thinking"] as? String else { return nil }
+                return ThinkingBlock(text: text, signature: block["signature"] as? String)
+            case "redacted_thinking":
+                guard let data = block["data"] as? String else { return nil }
+                return .redacted(data: data)
+            default:
+                return nil
+            }
+        }
     }
 
     /// Collect the citations attached to the response's text blocks.

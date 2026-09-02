@@ -140,6 +140,11 @@ private extension GeminiMapper {
         case .toolResults(let results):
             return results.isEmpty ? [] : [functionResponseContent(results: results)]
 
+        case .thinking:
+            // Gemini replays reasoning as a `thoughtSignature` on the function call that
+            // produced it, not as a part of its own, so a thinking block has nowhere to go.
+            return []
+
         case .mixed(let parts):
             return mapMixedContentToJSON(parts, role: message.role)
         }
@@ -183,7 +188,7 @@ private extension GeminiMapper {
             return []
         case .mixed(let parts):
             return parts.flatMap { plainContentParts($0) }
-        case .toolCalls, .toolResults:
+        case .toolCalls, .toolResults, .thinking:
             return []
         }
     }
