@@ -81,6 +81,18 @@ public struct AppleFMOptions: Sendable {
     /// maps to `ArbiterError.unsupportedLanguage` and lets the router fall back.
     public var enforceLocale: Bool
 
+    /// Report token counts on every response.
+    ///
+    /// Apple's `Response` carries no usage figures, so the numbers are measured after the
+    /// fact with `SystemLanguageModel.tokenCount(for:)` — real tokenisation, not a
+    /// character estimate, but real work too: several `async` calls over the transcript per
+    /// turn. Left on because honest accounting is what stops the router estimating a
+    /// 4k window with `characters * 0.25`; turn it off for latency-critical loops.
+    ///
+    /// Needs iOS 26.4 / macOS 26.4 / visionOS 26.4. Below that the counting API does not
+    /// exist and ``AIResponse/usage`` stays `nil` rather than being fabricated.
+    public var reportTokenUsage: Bool
+
     public init(
         sampling: AppleFMSampling? = nil,
         useCase: AppleFMUseCase = .general,
@@ -93,7 +105,8 @@ public struct AppleFMOptions: Sendable {
         tools: [AppleFMToolBinding] = [],
         includeSchemaInPrompt: Bool = true,
         locale: Locale? = nil,
-        enforceLocale: Bool = false
+        enforceLocale: Bool = false,
+        reportTokenUsage: Bool = true
     ) {
         self.sampling = sampling
         self.useCase = useCase
@@ -107,6 +120,7 @@ public struct AppleFMOptions: Sendable {
         self.includeSchemaInPrompt = includeSchemaInPrompt
         self.locale = locale
         self.enforceLocale = enforceLocale
+        self.reportTokenUsage = reportTokenUsage
     }
 
     /// Identity of the *session* these options would create.
@@ -164,6 +178,10 @@ extension AppleFMOptions: CustomStringConvertible {
         parts.append("prewarm:\(prewarm)")
         parts.append("overflow:\(contextOverflow.rawValue)")
         parts.append("schemaInPrompt:\(includeSchemaInPrompt)")
+        // Folded in because it changes the response: a cached answer either carries usage
+        // figures or does not, and a caller that asked for them should not be served one
+        // that lacks them.
+        parts.append("usage:\(reportTokenUsage)")
         if enforceLocale { parts.append("locale:\((locale ?? .current).identifier)") }
         if let conversationID { parts.append("conversation:\(conversationID)") }
         return "AppleFMOptions(\(parts.joined(separator: ", ")))"

@@ -96,10 +96,13 @@ print(response.content) // Final answer comparing both cities
 | Gemini | Yes | Full support via function declarations |
 | Ollama | No | Not supported by Ollama API |
 | MLX | No | On-device models lack tool support |
-| Apple FM | No | Foundation Models API does not expose tools |
+| Apple FM | Yes, differently | The model calls tools *inside* `respond()`, so this guide's pattern does not apply: bind each definition to an executor in `AppleFMOptions.tools` and select the provider with `RequestOptions(provider: .appleFoundation)`. The turn always finishes `.complete`, never `.toolCall`, and `response.toolCalls` records what already ran. `capabilities.supportsToolCalling` reports `false` so the router does not send tool requests to a provider whose bindings it cannot see. |
 
 The Smart Router automatically considers tool calling support when routing.
-If your request includes tools, providers without tool support are disqualified.
+If your request includes tools, providers without tool support are disqualified —
+Apple FM included, since the router cannot tell whether that request's tools have
+executors bound. Reach it with `RequestOptions(provider: .appleFoundation)`, which
+bypasses capability matching.
 
 ## Tips
 

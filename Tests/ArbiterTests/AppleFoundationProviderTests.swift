@@ -33,12 +33,16 @@ struct AppleFoundationProviderTests {
         #expect(tasks.contains(.structuredOutput))
     }
 
-    /// Tools are executed by the session itself, so a turn ends complete rather than at a
-    /// `.toolCall` finish reason. See ``AppleFMToolBinding``.
-    @Test func providerSupportsToolCalling() {
+    /// The capability flag is a routing signal, and it says no even though the machinery
+    /// says yes: executors live in `providerOptions`, which `CapabilityMatcher` cannot see,
+    /// so advertising tool support would route tool requests here and let an unbound tool
+    /// end the fallback chain. Tool calling itself works — see
+    /// `aSessionWithBoundToolsRunsOnDevice` and
+    /// `boundToolsReachTheSessionAndAreNamedInTheTranscript`.
+    @Test func providerDoesNotAdvertiseToolCallingToTheRouter() {
         guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
-        #expect(provider.capabilities.supportsToolCalling)
+        #expect(!provider.capabilities.supportsToolCalling)
     }
 
     @Test func stubProviderReportsUnavailable() async {
@@ -92,10 +96,16 @@ struct AppleFoundationProviderTests {
         #expect(!provider.capabilities.supportsImageInput)
     }
 
-    @Test func providerContextWindowIs4K() {
+    /// Reported from `SystemLanguageModel.contextSize`, so this asserts the two agree
+    /// rather than pinning a literal that goes stale the day Apple ships a bigger window.
+    @Test func providerContextWindowIsTheModelsReportedSize() {
         guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
         let provider = AppleFoundationProvider()
-        #expect(provider.capabilities.maxContextTokens == 4_096)
+        #expect(provider.capabilities.maxContextTokens > 0)
+        // `FMBridge` is itself behind the framework, and this suite compiles either way.
+        #if canImport(FoundationModels)
+        #expect(provider.capabilities.maxContextTokens == FMBridge.contextSize)
+        #endif
     }
 
     @Test func providerDoesNotSupportCodeGeneration() {
@@ -966,6 +976,273 @@ struct AppleFoundationProviderBehaviourTests {
         }
     }
 
+    // MARK: - Token accounting
+
+    @Test func measuredUsageReachesTheResponse() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let usage = TokenUsage(inputTokens: 120, outputTokens: 9)
+        let (provider, factory) = makeProvider(scripts: [[.textWithUsage("Tokyo.", usage)]])
+
+        let response = try await provider.generate(conversation)
+
+        #expect(response.usage == usage)
+        // Counting is on unless the caller turns it off.
+        #expect(factory.sessions.first?.settings.first?.reportTokenUsage == true)
+    }
+
+    @Test func measuredUsageReachesTheFinalStreamChunk() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let usage = TokenUsage(inputTokens: 120, outputTokens: 9)
+        let (provider, _) = makeProvider(scripts: [[.textWithUsage("Tokyo.", usage)]])
+
+        var chunks: [AIStreamChunk] = []
+        for try await chunk in provider.stream(conversation) {
+            chunks.append(chunk)
+        }
+
+        let last = try #require(chunks.last)
+        #expect(last.isComplete)
+        #expect(last.usage == usage)
+        // The counts ride on the completion chunk alone — a snapshot that only reports them
+        // carries no new text and must not surface as an empty delta.
+        #expect(chunks.dropLast().allSatisfy { $0.usage == nil })
+        #expect(chunks.dropLast().allSatisfy { !$0.delta.isEmpty })
+    }
+
+    /// Nothing is fabricated when counting is off or unavailable: `nil` means "not
+    /// measured", which the router's estimator already handles.
+    @Test func usageIsAbsentRatherThanEstimatedWhenNotReported() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(
+            scripts: [[.textWithUsage("Tokyo.", TokenUsage(inputTokens: 120, outputTokens: 9))]]
+        )
+        let request = conversation.withProviderOptions(
+            AppleFMOptions(reportTokenUsage: false), for: .appleFoundation
+        )
+
+        let response = try await provider.generate(request)
+
+        #expect(response.usage == nil)
+        #expect(factory.sessions.first?.settings.first?.reportTokenUsage == false)
+    }
+
+    /// An abandoned attempt's counts belong to a turn that produced nothing.
+    @Test func aRetriedStreamReportsOnlyTheRetrysUsage() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let retryUsage = TokenUsage(inputTokens: 40, outputTokens: 3)
+        let (provider, _) = makeProvider(scripts: [
+            [.failure(.contextWindowExceeded("too long"))],
+            [.text("summary")],
+            [.textWithUsage("Tokyo.", retryUsage)],
+        ])
+        let request = AIRequest(
+            messages: [
+                .user("one"), .assistant("two"), .user("three"), .assistant("four"),
+                .user("five"), .assistant("six"), .user("And Japan?"),
+            ]
+        ).withProviderOptions(
+            AppleFMOptions(contextOverflow: .summarizeAndRetry), for: .appleFoundation
+        )
+
+        var chunks: [AIStreamChunk] = []
+        for try await chunk in provider.stream(request) {
+            chunks.append(chunk)
+        }
+
+        #expect(chunks.last?.usage == retryUsage)
+    }
+
+    @Test func theReportedContextWindowIsTheModelsOwn() {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[]], contextLimit: 65_536)
+        #expect(provider.capabilities.maxContextTokens == 65_536)
+    }
+
+    // MARK: - Feedback
+
+    @Test func feedbackIsBuiltBySessionThatProducedTheResponse() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, factory) = makeProvider(scripts: [[.text("Tokyo.")]])
+        _ = try await provider.generate(conversation.withProviderOptions(
+            AppleFMOptions(conversationID: "chat"), for: .appleFoundation
+        ))
+
+        let issues = [AppleFMFeedbackIssue(category: .tooVerbose, explanation: "Rambled.")]
+        let attachment = try await provider.feedback(
+            forConversation: "chat", sentiment: .negative, issues: issues
+        )
+
+        // The provider hands back exactly what the session produced, unwrapped.
+        #expect(attachment == Data("mock-feedback".utf8))
+        let filed = try #require(factory.sessions.first?.feedback.first)
+        #expect(filed.sentiment == .negative)
+        #expect(filed.issues == issues)
+    }
+
+    /// Feedback describes a specific session, so without one there is nothing to describe —
+    /// reported as a bad request rather than an empty attachment.
+    @Test func feedbackWithoutACachedSessionIsRejected() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let (provider, _) = makeProvider(scripts: [[.text("Tokyo.")]])
+        // Ran without a conversation ID, so nothing was cached.
+        _ = try await provider.generate(conversation)
+
+        await #expect(throws: ArbiterError.self) {
+            _ = try await provider.feedback(forConversation: "chat", sentiment: .positive)
+        }
+    }
+
+    // MARK: - Overflow adoption
+
+    /// The condensed history has to become the conversation's history, or every later turn
+    /// replays the transcript that already did not fit and pays for a summary again.
+    @Test func aCondensedHistoryIsAdoptedByTheFollowingTurn() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let store = AppleFMSessionStore()
+        let (provider, factory) = makeProvider(
+            scripts: [
+                [.failure(.contextWindowExceeded("too long"))],
+                [.text("Earlier: they discussed capitals.")],
+                [.text("Tokyo."), .text("Berlin.")],
+            ],
+            store: store
+        )
+        let options = AppleFMOptions(
+            conversationID: "chat", contextOverflow: .summarizeAndRetry
+        )
+        let history: [Message] = [
+            .user("one"), .assistant("two"), .user("three"), .assistant("four"),
+            .user("five"), .assistant("six"), .user("seven"), .assistant("eight"),
+            .user("nine"), .assistant("ten"),
+        ]
+
+        let first = try await provider.generate(
+            AIRequest(messages: history + [.user("And Japan?")], systemPrompt: "Be terse.")
+                .withProviderOptions(options, for: .appleFoundation)
+        )
+        #expect(first.content == "Tokyo.")
+        #expect(factory.sessionCount == 3)
+
+        // Turn two carries the whole conversation again, including the answer just given.
+        let second = try await provider.generate(
+            AIRequest(
+                messages: history + [.user("And Japan?"), .assistant("Tokyo."), .user("Germany?")],
+                systemPrompt: "Be terse."
+            ).withProviderOptions(options, for: .appleFoundation)
+        )
+
+        #expect(second.content == "Berlin.")
+        // No fourth session and no second summariser: the condensed history was adopted, so
+        // the turn fits — and it is the retry's own session, extended.
+        #expect(factory.sessionCount == 3)
+        let retried = try #require(factory.sessions.last)
+        #expect(retried.callCount == 2)
+        #expect(retried.prompts == ["And Japan?", "Germany?"])
+
+        // Exactly one summarisation across both turns.
+        let summariser = try #require(factory.sessions.dropFirst().first)
+        #expect(summariser.callCount == 1)
+    }
+
+    /// Cancelling a turn, or losing it to a concurrent one, is not grounds for replacing
+    /// the caller's history with a summary it never got an answer from.
+    @Test func aRetryThatProducesNoAnswerIsNotAdopted() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let store = AppleFMSessionStore()
+        let (provider, factory) = makeProvider(
+            scripts: [
+                [.failure(.contextWindowExceeded("too long"))],
+                [.text("summary")],
+                [.failure(.concurrentRequests("another turn holds the session"))],
+            ],
+            store: store
+        )
+        let request = AIRequest(
+            messages: [
+                .user("one"), .assistant("two"), .user("three"), .assistant("four"),
+                .user("five"), .assistant("six"), .user("And Japan?"),
+            ]
+        ).withProviderOptions(
+            AppleFMOptions(conversationID: "chat", contextOverflow: .summarizeAndRetry),
+            for: .appleFoundation
+        )
+
+        await #expect(throws: ArbiterError.self) {
+            try await provider.generate(request)
+        }
+        #expect(factory.sessionCount == 3)
+        #expect(await store.condensation(for: "chat") == nil)
+    }
+
+    /// Adoption is keyed on a conversation, so a stateless caller gets the old behaviour:
+    /// correct, but paying for the summary every turn.
+    @Test func adoptionNeedsAConversationID() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let store = AppleFMSessionStore()
+        let (provider, factory) = makeProvider(
+            scripts: [
+                [.failure(.contextWindowExceeded("too long"))],
+                [.text("summary")],
+                [.text("Tokyo.")],
+                [.failure(.contextWindowExceeded("too long"))],
+                [.text("summary")],
+                [.text("Berlin.")],
+            ],
+            store: store
+        )
+        let options = AppleFMOptions(contextOverflow: .summarizeAndRetry)
+        let history: [Message] = [
+            .user("one"), .assistant("two"), .user("three"), .assistant("four"),
+            .user("five"), .assistant("six"),
+        ]
+
+        _ = try await provider.generate(
+            AIRequest(messages: history + [.user("And Japan?")])
+                .withProviderOptions(options, for: .appleFoundation)
+        )
+        _ = try await provider.generate(
+            AIRequest(messages: history + [.user("And Japan?"), .assistant("Tokyo."), .user("Germany?")])
+                .withProviderOptions(options, for: .appleFoundation)
+        )
+
+        #expect(factory.sessionCount == 6)
+    }
+
+    /// A streamed overflow adopts its summary the same way a non-streamed one does.
+    @Test func aStreamedCondensationIsAdoptedToo() async throws {
+        guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return }
+        let store = AppleFMSessionStore()
+        let (provider, factory) = makeProvider(
+            scripts: [
+                [.failure(.contextWindowExceeded("too long"))],
+                [.text("Earlier: they discussed capitals.")],
+                [.text("Tokyo."), .text("Berlin.")],
+            ],
+            store: store
+        )
+        let options = AppleFMOptions(
+            conversationID: "chat", contextOverflow: .summarizeAndRetry
+        )
+        let history: [Message] = [
+            .user("one"), .assistant("two"), .user("three"), .assistant("four"),
+            .user("five"), .assistant("six"), .user("seven"), .assistant("eight"),
+        ]
+
+        for try await _ in provider.stream(
+            AIRequest(messages: history + [.user("And Japan?")])
+                .withProviderOptions(options, for: .appleFoundation)
+        ) {}
+        #expect(factory.sessionCount == 3)
+
+        for try await _ in provider.stream(
+            AIRequest(messages: history + [.user("And Japan?"), .assistant("Tokyo."), .user("Germany?")])
+                .withProviderOptions(options, for: .appleFoundation)
+        ) {}
+
+        #expect(factory.sessionCount == 3)
+        #expect(factory.sessions.dropFirst().first?.callCount == 1)
+    }
+
     private static func plainText(_ transcript: FMTranscript) -> String {
         transcript.entries.map { entry in
             switch entry {
@@ -1067,6 +1344,74 @@ struct AppleFoundationProviderDeviceTests {
             #expect(call.name == "get_population")
             #expect(await calls.arguments.count == executed)
         }
+    }
+
+    /// The claim the mock cannot make: these numbers are *measured*, not plumbed.
+    @Test func tokenUsageIsMeasuredAgainstTheRealTokeniser() async throws {
+        guard #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        let response = try await provider.generate(
+            AIRequest.chat("Name one primary colour.").withMaxTokens(64)
+        )
+
+        let usage = try #require(response.usage)
+        #expect(usage.inputTokens > 0)
+        #expect(usage.outputTokens > 0)
+        // A turn the model accepted cannot have cost more than the window it fitted into.
+        #expect(usage.totalTokens <= provider.capabilities.maxContextTokens)
+    }
+
+    /// Pins how a response schema is accounted for, which is not obvious and was measured
+    /// rather than assumed: with `includeSchemaInPrompt` on, the framework renders the
+    /// schema into the prompt entry, so a count over the transcript already carries it;
+    /// with it off, the schema never becomes text — it only constrains sampling — so there
+    /// is nothing to attribute. Either way, counting the schema separately on top would be
+    /// wrong, which is what this guards.
+    @Test func aStructuredTurnCountsItsSchemaExactlyOnce() async throws {
+        guard #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) else { return }
+        let provider = AppleFoundationProvider()
+        guard await provider.isAvailable else { return }
+
+        let schemaJSON = """
+        {"type": "object",
+         "properties": {"city": {"type": "string"},
+                        "country": {"type": "string"},
+                        "populationMillions": {"type": "integer",
+                                               "minimum": 1, "maximum": 100}},
+         "required": ["city", "country", "populationMillions"]}
+        """
+        let question = "Tokyo."
+
+        func inputTokens(schemaInPrompt: Bool?) async throws -> Int {
+            var request = AIRequest.chat(question).withMaxTokens(256)
+            if let schemaInPrompt {
+                request = request
+                    .withResponseFormat(.structured(schema: schemaJSON))
+                    .withProviderOptions(
+                        AppleFMOptions(includeSchemaInPrompt: schemaInPrompt), for: .appleFoundation
+                    )
+            }
+            return try #require(try await provider.generate(request).usage?.inputTokens)
+        }
+
+        let plain = try await inputTokens(schemaInPrompt: nil)
+        let described = try await inputTokens(schemaInPrompt: true)
+        let constrainedOnly = try await inputTokens(schemaInPrompt: false)
+
+        let schemaTokens = try await SystemLanguageModel.default.tokenCount(
+            for: FMBridge.generationSchema(
+                from: try FMSchemaConverter.tree(fromSchemaString: schemaJSON, rootName: "Response")
+            )
+        )
+
+        // Described in the prompt: costs about its own size, once. Counting it twice would
+        // put the difference at roughly double.
+        #expect(described > plain)
+        #expect(described - plain < schemaTokens * 3 / 2)
+        // Constraint only: never sent as text, so it costs the same as no schema at all.
+        #expect(constrainedOnly == plain)
     }
 
     @Test func localeSupportIsReportedFromTheModel() async {

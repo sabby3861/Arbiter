@@ -1,8 +1,62 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — next release is **0.2.0** (minor)
+
+`ArbiterError` gained four cases — `contextWindowExceeded(_:limit:)`, `refused(_:explanation:)`,
+`unsupportedLanguage(_:locale:)` and `busy(_:)`. Adding a case to a public enum is
+source-breaking for any downstream `switch` over `ArbiterError` that has no `default:`, so
+this is a minor version bump rather than a patch. Adding a `default:` (or the four new
+cases) is the whole migration; no existing case changed shape.
 
 ### Added
+
+- **Apple Foundation Models — full native integration.** Conversation history now reaches
+  the on-device model as a `Transcript` instead of only the latest user message, and
+  `AppleFMOptions.conversationID` reuses one `LanguageModelSession` across turns so Apple's
+  KV cache survives. `ResponseFormat.structured(schema:)` is compiled to a
+  `GenerationSchema` and enforced by constrained decoding; `generate(_:as:)` and
+  `streamGenerate(_:as:)` take a Swift `@Generable` type directly. Errors map to the typed
+  `ArbiterError` cases above rather than all becoming `providerUnavailable`, and
+  `AppleFMOptions.contextOverflow = .summarizeAndRetry` condenses older turns and retries
+  once — the condensed history is then adopted for the rest of the conversation, so a
+  summary is paid for once rather than every turn. `capabilities.maxContextTokens` reads
+  the model's own `contextSize`, and token usage is *measured* with
+  `SystemLanguageModel.tokenCount(for:)` on OS 26.4+ (Apple publishes no usage on its
+  responses; below 26.4 `usage` is `nil` rather than estimated).
+  `AvailabilityChecker.availability()` returns a typed reason, and
+  `AppleFoundationProvider.feedback(forConversation:sentiment:issues:)` builds a
+  `LanguageModelFeedback` attachment.
+
+  **Tool semantics differ from the cloud providers, by design.** Apple executes tools
+  *inside* `respond()` — there is no API that hands a pending call back — so a tool must be
+  supplied with its executor via `AppleFMOptions.tools`, the turn always finishes
+  `.complete` and never `.toolCall`, and `AIResponse.toolCalls` is a record of calls that
+  have already run rather than calls for you to run. An agent loop must branch on
+  `finishReason`, not on `toolCalls` being non-empty, or it will re-execute what the device
+  already did.
+
+  `capabilities.supportsToolCalling` stays `false`, because the router cannot inspect
+  `providerOptions` and so cannot know whether a given request's tools have executors
+  bound; reporting `true` would steer every tool request on-device, where a request whose
+  tools are unbound fails with `invalidRequest` and stops the fallback chain instead of
+  falling through to a provider that could serve it. `CapabilityMatcher` treats the flag as
+  a hard disqualification, so a request carrying `tools` never selects this provider
+  automatically — reach it by selecting it, which bypasses capability matching:
+
+  ```swift
+  try await ai.generate(prompt, options: .init(
+      provider: .appleFoundation,
+      tools: [weather.definition],
+      providerOptions: [.appleFoundation: AppleFMOptions(tools: [weather])]
+  ))
+  ```
+
+  The flag flips when the runtime's tool-execution loop can supply the bindings itself.
+
+  Image input and Private Cloud Compute are not implemented: the installed macOS 26.5 SDK
+  exposes neither, and `ProviderID.applePrivateCloud` is deliberately not added until there
+  is a provider behind it.
+
 - **Request Intelligence Engine**: `RequestAnalyser` classifies prompt complexity (trivial → expert), detects task type (classification, code generation, reasoning, etc.), and estimates output tokens before routing
 - **Adaptive routing**: `ProviderPerformanceTracker` records real-world latency and success rates per provider per task type, adjusting routing scores after 10+ requests — the router gets smarter with usage
 - **Pre-request cost estimation**: `Arbiter.estimateCost()` returns per-provider cost estimates without sending a request
