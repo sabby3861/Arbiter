@@ -12,6 +12,11 @@ public struct RoutingDecision: Sendable, Equatable {
     public let factors: [RoutingFactor]
     public let analysis: RequestAnalysis?
     public let candidateScores: [CandidateScore]
+    /// What the privacy assessment found, and whether it constrained routing.
+    ///
+    /// Categories only — the report never carries the matched values, so it is safe to
+    /// log or display. `nil` when no ``PrivacyGuard`` is configured.
+    public let privacyReport: PrivacyReport?
 
     public init(
         selectedProvider: ProviderID?,
@@ -20,7 +25,8 @@ public struct RoutingDecision: Sendable, Equatable {
         confidenceScore: Double = 1.0,
         factors: [RoutingFactor] = [],
         analysis: RequestAnalysis? = nil,
-        candidateScores: [CandidateScore] = []
+        candidateScores: [CandidateScore] = [],
+        privacyReport: PrivacyReport? = nil
     ) {
         self.selectedProvider = selectedProvider
         self.reason = reason
@@ -29,15 +35,23 @@ public struct RoutingDecision: Sendable, Equatable {
         self.factors = factors
         self.analysis = analysis
         self.candidateScores = candidateScores
+        self.privacyReport = privacyReport
     }
 
     /// No providers could handle the request.
-    static func unavailable(factors: [RoutingFactor]) -> RoutingDecision {
-        RoutingDecision(
+    static func unavailable(
+        factors: [RoutingFactor],
+        privacyReport: PrivacyReport? = nil
+    ) -> RoutingDecision {
+        let constrainedByPrivacy = privacyReport?.forcesOnDevice == true
+        return RoutingDecision(
             selectedProvider: nil,
-            reason: "No providers available",
+            reason: constrainedByPrivacy
+                ? "No providers available that satisfy the privacy constraint"
+                : "No providers available",
             confidenceScore: 0,
-            factors: factors
+            factors: factors,
+            privacyReport: privacyReport
         )
     }
 

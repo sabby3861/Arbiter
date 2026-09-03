@@ -685,7 +685,7 @@ extension AnthropicMapper {
             return ["type": "adaptive"]
 
         case .extended(let budgetTokens):
-            if let support, support != .extended {
+            if let support, support != .extended, support != .adaptiveOrExtended {
                 throw ArbiterError.invalidRequest(
                     reason: "\(model?.displayName ?? "This model") does not accept a thinking budget; use .adaptive"
                 )

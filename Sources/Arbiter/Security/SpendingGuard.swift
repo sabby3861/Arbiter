@@ -47,32 +47,62 @@ public actor SpendingGuard {
     /// When `limitAction` is `.block`, throws `budgetExceeded` on any limit violation.
     /// When `limitAction` is `.fallbackToCheaper`, returns `nil` to signal the caller
     /// should fall back to a cheaper or free provider instead of blocking.
+    ///
+    /// That `nil` is a *refusal*, not permission: nothing was reserved and nothing will
+    /// be billed, so a caller that goes on to spend money on the strength of it spends
+    /// it untracked. Callers inside the package use ``attemptReservation(estimatedCost:)``
+    /// instead, which hands back the refusal's reason so it cannot be mistaken for a
+    /// provider that costs nothing.
     public func reserveBudget(estimatedCost: Double) throws -> Reservation? {
+        switch attemptReservation(estimatedCost: estimatedCost) {
+        case .reserved(let reservation):
+            return reservation
+        case .refused(let error):
+            if limitAction == .fallbackToCheaper { return nil }
+            throw error
+        }
+    }
+
+    /// What an atomic budget check decided.
+    ///
+    /// Deliberately internal: it exists so the runtime can fail closed on a refusal, not
+    /// to widen the package's configuration surface.
+    enum ReservationOutcome: Sendable {
+        case reserved(Reservation)
+        /// The limit that stopped the request, as the error a caller with nowhere
+        /// cheaper to go should surface.
+        case refused(ArbiterError)
+    }
+
+    /// Atomically check every limit and, if the request fits, reserve its estimated cost.
+    ///
+    /// The check and the reservation are one actor hop, so two concurrent requests cannot
+    /// both see room for the last of the budget. `limitAction` does not enter into it:
+    /// this reports what the limits say, and the caller decides whether that means
+    /// blocking or looking for a cheaper provider.
+    func attemptReservation(estimatedCost: Double) -> ReservationOutcome {
         resetDayIfNeeded()
 
         if let perRequest = perRequestLimit, estimatedCost > perRequest {
             logger.warning("Per-request limit exceeded: $\(estimatedCost, privacy: .public) > $\(perRequest, privacy: .public)")
-            if limitAction == .fallbackToCheaper { return nil }
-            throw ArbiterError.budgetExceeded(spent: totalSpent, limit: budgetLimit)
+            return .refused(.budgetExceeded(spent: totalSpent, limit: budgetLimit))
         }
 
         if let dailyLimit = dailyRequestLimit, dailyRequestCount >= dailyLimit {
             logger.warning("Daily request limit reached: \(self.dailyRequestCount, privacy: .public)")
-            if limitAction == .fallbackToCheaper { return nil }
-            throw ArbiterError.dailyLimitExceeded(count: dailyRequestCount, limit: dailyLimit)
+            return .refused(.dailyLimitExceeded(count: dailyRequestCount, limit: dailyLimit))
         }
 
         let projectedSpend = totalSpent + estimatedCost
         if projectedSpend > budgetLimit {
             logger.warning("Budget exceeded: spent=$\(self.totalSpent, privacy: .public) est=$\(estimatedCost, privacy: .public) limit=$\(self.budgetLimit, privacy: .public)")
-            if limitAction == .fallbackToCheaper { return nil }
-            throw ArbiterError.budgetExceeded(spent: totalSpent, limit: budgetLimit)
+            return .refused(.budgetExceeded(spent: totalSpent, limit: budgetLimit))
         }
 
         totalSpent += estimatedCost
         dailyRequestCount += 1
         logger.debug("Reserved $\(estimatedCost, privacy: .public), total now: $\(self.totalSpent, privacy: .public)")
-        return Reservation(estimatedCost: estimatedCost)
+        return .reserved(Reservation(estimatedCost: estimatedCost))
     }
 
     /// Finalize a reservation with the actual cost.

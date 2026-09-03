@@ -823,6 +823,89 @@ struct AnthropicModelCatalogueTests {
         #expect(provider.capabilities.costPerMillionInputTokens == 5.0)
         #expect(provider.capabilities.costPerMillionOutputTokens == 25.0)
     }
+
+    /// The models Anthropic still lists as Active while marking them legacy.
+    /// Before this, a caller pinning one of them silently got the *default*
+    /// model's window and price, because `named` returned `nil`.
+    @Test func legacyButActiveModelsResolveWithTheirOwnSpecs() {
+        let legacy: [(String, Int, Int?, Double, Double)] = [
+            ("claude-fable-5", 1_000_000, 128_000, 10.0, 50.0),
+            ("claude-opus-4-8", 1_000_000, 128_000, 5.0, 25.0),
+            ("claude-opus-4-7", 1_000_000, 128_000, 5.0, 25.0),
+            ("claude-opus-4-6", 1_000_000, 128_000, 5.0, 25.0),
+            ("claude-opus-4-5-20251101", 200_000, 64_000, 5.0, 25.0),
+            ("claude-sonnet-4-6", 1_000_000, 128_000, 3.0, 15.0),
+            ("claude-sonnet-4-5-20250929", 200_000, 64_000, 3.0, 15.0),
+        ]
+        for (id, window, output, input, outputPrice) in legacy {
+            guard let model = AnthropicModel.named(id) else {
+                Issue.record("\(id) is not in the catalogue")
+                continue
+            }
+            #expect(model.contextWindow == window, "\(id) context window")
+            #expect(model.maxOutputTokens == output, "\(id) output cap")
+            #expect(model.costPerMillionInput == input, "\(id) input price")
+            #expect(model.costPerMillionOutput == outputPrice, "\(id) output price")
+            #expect(model.isLegacy, "\(id) legacy flag")
+        }
+    }
+
+    /// Extended thinking is deprecated on the 4.6 generation and not accepted
+    /// after it, so those models take an adaptive configuration; 4.5 still
+    /// takes a `budget_tokens`.
+    @Test func legacyModelsThinkingAndSamplingMatchTheirGeneration() {
+        #expect(AnthropicModel.claudeFable5.thinkingSupport == .alwaysOnAdaptive)
+        #expect(AnthropicModel.claudeOpus48.thinkingSupport == .adaptive)
+        // 4.6 is the crossover generation: adaptive is documented, a budget is
+        // deprecated but still served.
+        #expect(AnthropicModel.claudeOpus46.thinkingSupport == .adaptiveOrExtended)
+        #expect(AnthropicModel.claudeSonnet46.thinkingSupport == .adaptiveOrExtended)
+        #expect(AnthropicModel.claudeOpus45.thinkingSupport == .extended)
+        #expect(AnthropicModel.claudeSonnet45.thinkingSupport == .extended)
+
+        // Sampling parameters are a 400 from Opus 4.7 on, and accepted before it.
+        #expect(AnthropicModel.claudeOpus47.supportsSamplingControls == false)
+        #expect(AnthropicModel.claudeFable5.supportsSamplingControls == false)
+        #expect(AnthropicModel.claudeOpus46.supportsSamplingControls == true)
+        #expect(AnthropicModel.claudeSonnet46.supportsSamplingControls == true)
+        #expect(AnthropicModel.claudeSonnet45.supportsSamplingControls == true)
+    }
+
+    /// Adding the 4.6 models to the catalogue must not make Arbiter refuse a call
+    /// the API serves: before they were listed, `named` returned `nil` and a budget
+    /// passed through unvalidated, so classifying them adaptive-only would have been
+    /// a regression dressed as a correction.
+    @Test func theCrossoverGenerationAcceptsBothThinkingForms() throws {
+        let mapper = AnthropicMapper(defaultModel: .claudeOpus46)
+        for model in [AnthropicModel.claudeOpus46, .claudeSonnet46] {
+            let adaptive = try mapper.thinkingModeJSON(.adaptive, model: model, maxTokens: 8_000)
+            #expect(adaptive["type"] as? String == "adaptive", "\(model.rawValue) adaptive")
+
+            let budgeted = try mapper.thinkingModeJSON(
+                .extended(budgetTokens: 4_000), model: model, maxTokens: 8_000
+            )
+            #expect(budgeted["type"] as? String == "enabled", "\(model.rawValue) budget type")
+            #expect(budgeted["budget_tokens"] as? Int == 4_000, "\(model.rawValue) budget value")
+        }
+
+        // The neighbouring generations still refuse the form they do not take.
+        #expect(throws: ArbiterError.self) {
+            try mapper.thinkingModeJSON(
+                .extended(budgetTokens: 4_000), model: .claudeOpus47, maxTokens: 8_000
+            )
+        }
+        #expect(throws: ArbiterError.self) {
+            try mapper.thinkingModeJSON(.adaptive, model: .claudeOpus45, maxTokens: 8_000)
+        }
+    }
+
+    @Test func everyOfferedModelIsCallableAndTheRetiredOneIsNot() {
+        #expect(AnthropicModel.allCases.count == 11)
+        #expect(!AnthropicModel.allCases.contains { $0.rawValue == "claude-sonnet-4-20250514" })
+        for model in AnthropicModel.allCases {
+            #expect(AnthropicModel.named(model.rawValue) == model)
+        }
+    }
 }
 
 @Suite("Anthropic — review follow-ups")

@@ -67,7 +67,10 @@ public final class Arbiter: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(
             privacyGuard: config.privacyGuard,
-            healthMonitor: config.healthMonitor
+            deviceAssessment: config.deviceAssessment,
+            healthMonitor: config.healthMonitor,
+            taskClassifier: config.taskClassifier,
+            performanceTracker: config.performanceTracker
         )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
@@ -84,7 +87,10 @@ public final class Arbiter: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(
             privacyGuard: config.privacyGuard,
-            healthMonitor: config.healthMonitor
+            deviceAssessment: config.deviceAssessment,
+            healthMonitor: config.healthMonitor,
+            taskClassifier: config.taskClassifier,
+            performanceTracker: config.performanceTracker
         )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
@@ -246,14 +252,25 @@ extension Arbiter {
         let decision = await routeRequest(request, options: options)
 
         guard decision.isAvailable else {
-            throw ArbiterError.allProvidersFailed(attempts: [])
+            throw unroutableError(for: decision)
         }
 
         let providerOrder = buildProviderOrder(from: decision)
         var attempts: [(ProviderID, any Error & Sendable)] = []
+        var budgetRefusals = 0
+        var reorderedForBudget = false
         let policy = executionPolicy(options: options)
 
-        for providerID in providerOrder.prefix(policy.providerAttemptLimit) {
+        // A queue rather than a `for` loop: a budget refusal re-orders what is left of it.
+        //
+        // The attempt limit counts providers actually *sent to*, which is what
+        // `ExecutionPolicy` defines it as. A provider the budget refused was never
+        // touched, so spending a slot on it would let three refusals exhaust the chain
+        // before the one candidate that fits the remaining budget is ever reached.
+        var remaining = providerOrder
+        var sends = 0
+        while !remaining.isEmpty, sends < policy.providerAttemptLimit {
+            let providerID = remaining.removeFirst()
             guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
             let startTime = CFAbsoluteTimeGetCurrent()
             do {
@@ -273,8 +290,20 @@ extension Arbiter {
                 return response
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let refusal as BudgetRefusal {
+                // No `recordOutcome`: the budget stopped this before the provider was
+                // called, and scoring it as a failure would teach the router that a
+                // provider is unreliable when all that happened is that it costs money.
+                attempts.append((providerID, refusal.underlying))
+                budgetRefusals += 1
+                logger.debug("Provider \(providerID.rawValue) refused by the budget, trying a cheaper one")
+                if !reorderedForBudget {
+                    reorderedForBudget = true
+                    remaining = await orderedByEstimatedCost(remaining, request: request)
+                }
             } catch {
                 let failureLatency = CFAbsoluteTimeGetCurrent() - startTime
+                sends += 1
                 attempts.append((providerID, error))
                 let detectedTask = decision.analysis?.detectedTask ?? .conversation
                 await router.performanceTracker.recordOutcome(
@@ -288,6 +317,13 @@ extension Arbiter {
             }
         }
 
+        // Nothing the budget could pay for. Answering `allProvidersFailed` here would
+        // describe an outage the caller does not have; the limit that actually refused is
+        // the answer. Only when *every* candidate was refused on cost — a provider that
+        // failed for its own reasons still belongs in an `allProvidersFailed` list.
+        if budgetRefusals == attempts.count, let refusal = attempts.last?.1 {
+            throw refusal
+        }
         throw ArbiterError.allProvidersFailed(attempts: attempts)
     }
 
@@ -298,6 +334,8 @@ extension Arbiter {
         allowQualityRetry: Bool = true
     ) async throws -> AIResponse {
         let processedRequest = try await applyRequestMiddleware(request)
+        // Throws rather than returning an unreserved `nil` when the guard refuses, so no
+        // request reaches a priced provider without being counted against the budget.
         let reservation = try await reserveBudget(for: provider, request: processedRequest)
         // A reservation is settled exactly once. Without this, a failure *after* the
         // response was priced — a validation throw, or the quality retry throwing — would
@@ -414,8 +452,11 @@ extension Arbiter {
             guard let schema, NativeStructuredOutput.supports(providerID) else { return request }
             var native = request
             // The schema constrains decoding, so the prompt keeps the caller's own wording
-            // rather than the instructions that stand in for a schema.
-            native.messages = original
+            // rather than the instructions that stand in for a schema — except where the
+            // provider asks for both. See `NativeStructuredOutput.wantsInstructedPrompt`.
+            if !NativeStructuredOutput.wantsInstructedPrompt(providerID) {
+                native.messages = original
+            }
             native.responseFormat = .structured(schema: schema)
             return native
         }
@@ -426,6 +467,37 @@ extension Arbiter {
             throw ArbiterError.refused(response.provider, explanation: response.content)
         }
         return try structuredOutputHandler.decode(response.content, as: type)
+    }
+
+    /// Why nothing could be routed to.
+    ///
+    /// A privacy constraint that left nowhere to run is reported as
+    /// ``ArbiterError/privacyViolation(detectedTypes:reason:)`` rather than as a generic
+    /// failure: the request was not attempted *deliberately*, and a fail-closed guard's
+    /// whole purpose is that the caller can tell that apart from a network problem.
+    ///
+    /// The guard having narrowed the field is not enough on its own. If a private provider
+    /// is registered and simply failed — offline, over its context window — then providers
+    /// are what failed, and saying "register an on-device provider" to someone who has one
+    /// would send them looking in the wrong place.
+    func unroutableError(for decision: RoutingDecision) -> ArbiterError {
+        guard let report = decision.privacyReport, report.forcesOnDevice else {
+            return .allProvidersFailed(attempts: [])
+        }
+        let hasPrivateProvider = providers.contains { $0.capabilities.privacyLevel != .thirdPartyCloud }
+        guard !hasPrivateProvider else { return .allProvidersFailed(attempts: []) }
+
+        let reason: String
+        if !report.matchedTags.isEmpty {
+            reason = "request tagged \(report.matchedTags.map(\.rawValue).sorted().joined(separator: ", "))"
+        } else if !report.detectedTypes.isEmpty {
+            reason = "sensitive data detected"
+        } else if report.failedClosed {
+            reason = "detection was inconclusive and the guard fails closed"
+        } else {
+            reason = "the guard restricts this request to on-device providers"
+        }
+        return .privacyViolation(detectedTypes: report.sortedTypes, reason: reason)
     }
 
     /// The guards and recovery mechanisms this request runs under.
@@ -522,12 +594,50 @@ extension Arbiter {
         return request
     }
 
+    /// Reserve the estimated cost of `request` against `provider`, or refuse the provider.
+    ///
+    /// A `nil` return means there is nothing to reserve — no spending guard is configured,
+    /// or the provider's tier costs nothing. It never means "the guard said no": a guard
+    /// that refuses throws, so no path through this method lets a priced request reach a
+    /// cloud provider unreserved and therefore unbilled.
+    ///
+    /// Under `.fallbackToCheaper` the refusal is wrapped in ``BudgetRefusal`` rather than
+    /// thrown bare, because the fallback loop treats it differently from a provider
+    /// failure: the provider was never called, so there is nothing to record against it,
+    /// and the remaining candidates are worth re-ordering by cost before the next attempt.
     func reserveBudget(for provider: any AIProvider, request: AIRequest) async throws -> SpendingGuard.Reservation? {
         guard let spendingGuard, provider.id.tier == .cloud else { return nil }
         let estimatedCost = await costTracker.estimateRequestCost(
             request: request, capabilities: provider.capabilities
         )
-        return try await spendingGuard.reserveBudget(estimatedCost: estimatedCost)
+        switch await spendingGuard.attemptReservation(estimatedCost: estimatedCost) {
+        case .reserved(let reservation):
+            return reservation
+        case .refused(let error):
+            guard spendingGuard.shouldFallbackOnBudgetExceeded else { throw error }
+            throw BudgetRefusal(underlying: error)
+        }
+    }
+
+    /// Orders `candidates` by what this request would cost on each, cheapest first.
+    ///
+    /// The fallback chain arrives in routing-score order, which weighs cost against
+    /// latency, capability and health. Once the budget has refused a provider none of
+    /// that is the question any more — what is left to decide is which candidate the
+    /// remaining budget can still pay for — so the untried remainder is re-ordered by
+    /// estimated cost. Providers that cost nothing estimate at zero and sort first;
+    /// equal costs keep their existing relative order.
+    func orderedByEstimatedCost(_ candidates: [ProviderID], request: AIRequest) async -> [ProviderID] {
+        var priced: [(index: Int, id: ProviderID, cost: Double)] = []
+        for (index, id) in candidates.enumerated() {
+            guard let provider = providers.first(where: { $0.id == id }) else { continue }
+            let cost = await costTracker.estimateRequestCost(
+                request: request, capabilities: provider.capabilities
+            )
+            priced.append((index, id, cost))
+        }
+        priced.sort { $0.cost == $1.cost ? $0.index < $1.index : $0.cost < $1.cost }
+        return priced.map(\.id)
     }
 
     func finalizeCost(
@@ -586,7 +696,7 @@ extension Arbiter {
         let decision = await routeRequest(request, options: options)
 
         guard decision.isAvailable else {
-            throw ArbiterError.allProvidersFailed(attempts: [])
+            throw unroutableError(for: decision)
         }
 
         let lastError = await attemptStreamProviders(
@@ -618,6 +728,15 @@ extension Arbiter {
                 return CancellationError()
             } catch let streamError as StreamingFallbackUnsafe {
                 return streamError.underlying
+            } catch let refusal as BudgetRefusal {
+                // Fail-closed as in `performGenerate`, but not by the same rule: there is
+                // no cost re-ordering and no all-refusals terminal case here, so a
+                // provider failure followed by a budget refusal reports the refusal alone
+                // where `generate` would report both. Unwrapped either way, so the caller
+                // sees the limit rather than an internal sentinel.
+                lastError = refusal.underlying
+                logger.debug("Stream provider \(providerID.rawValue) refused by the budget, trying the next")
+                continue
             } catch {
                 lastError = error
                 logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
@@ -664,6 +783,17 @@ extension Arbiter {
 /// Retrying with another provider would corrupt the consumer's output stream.
 private struct StreamingFallbackUnsafe: Error {
     let underlying: any Error & Sendable
+}
+
+/// Sentinel error: the spending guard refused a provider under `.fallbackToCheaper`,
+/// before the request was sent.
+///
+/// It is not the same thing as a provider failing, and the two are handled differently:
+/// a refused provider was never called, so it earns no performance record, and the
+/// candidates behind it are worth re-ordering by cost. Every path that can surface it to
+/// a caller unwraps ``underlying`` first — this type is a routing signal, not an answer.
+struct BudgetRefusal: Error {
+    let underlying: ArbiterError
 }
 
 /// Configuration options for individual requests
@@ -719,6 +849,9 @@ public struct Configuration: Sendable {
     var retryConfig: RetryConfiguration?
     var healthMonitor: ProviderHealthMonitor?
     var validationPolicy: ResponseValidationPolicy = .disabled
+    var taskClassifier: (any TaskClassifier)?
+    var deviceAssessment: (@Sendable () -> DeviceCapabilities)?
+    var performanceTracker: ProviderPerformanceTracker?
 
     var resolvedResponseValidator: ResponseValidator? {
         switch validationPolicy {
@@ -763,6 +896,13 @@ public struct Configuration: Sendable {
         privacyGuard = `guard`
     }
 
+    /// Supply an on-device classifier the router consults before its own task heuristics.
+    ///
+    /// See ``TaskClassifier``. A classifier that is unsure leaves the heuristics in charge.
+    public mutating func taskClassification(_ classifier: any TaskClassifier) {
+        taskClassifier = classifier
+    }
+
     /// Add a middleware to the processing pipeline
     public mutating func middleware(_ middleware: any AIMiddleware) {
         middlewares.append(middleware)
@@ -794,6 +934,26 @@ public struct Configuration: Sendable {
         case .enabled(let interval):
             healthMonitor = ProviderHealthMonitor(checkInterval: interval)
         }
+    }
+
+    /// Replaces the two router inputs that read machine state.
+    ///
+    /// The router's smart path asks `DeviceAssessor` for the live thermal state and asks
+    /// a `UserDefaults`-backed tracker for the performance history of earlier runs. Both
+    /// are correct in production and both make an assertion about a routing decision
+    /// depend on the machine it runs on — thermal pressure switches off the complexity
+    /// and task boosts outright, and ten recorded requests for a provider are enough to
+    /// move its score by as much as +15 or -20. Tests pin them; nothing else calls this, and leaving it
+    /// alone keeps the real device and the persisted tracker.
+    ///
+    /// Deliberately internal: it exists to make tests hermetic, not to be part of the
+    /// package's configuration surface.
+    mutating func routerEnvironment(
+        device: @escaping @Sendable () -> DeviceCapabilities,
+        performanceTracker tracker: ProviderPerformanceTracker
+    ) {
+        deviceAssessment = device
+        performanceTracker = tracker
     }
 }
 

@@ -17,19 +17,25 @@ public actor SmartRouter {
     private var _recentDecisions: [RoutingDebugEntry] = []
     private let maxHistorySize = 100
     private let analyser = RequestAnalyser()
-    let performanceTracker = ProviderPerformanceTracker()
+    private let taskClassifier: (any TaskClassifier)?
+    let performanceTracker: ProviderPerformanceTracker
     private let healthMonitor: ProviderHealthMonitor?
 
     public init(
         privacyGuard: PrivacyGuard? = nil,
         connectivityCheck: (@Sendable () async -> ConnectivityState)? = nil,
         deviceAssessment: (@Sendable () -> DeviceCapabilities)? = nil,
-        healthMonitor: ProviderHealthMonitor? = nil
+        healthMonitor: ProviderHealthMonitor? = nil,
+        taskClassifier: (any TaskClassifier)? = nil,
+        performanceTracker: ProviderPerformanceTracker? = nil
     ) {
         self.privacyGuard = privacyGuard
+        self.taskClassifier = taskClassifier
         self.connectivityCheck = connectivityCheck ?? ConnectivityMonitor.checkConnectivity
         self.deviceAssessment = deviceAssessment ?? DeviceAssessor.assess
         self.healthMonitor = healthMonitor
+        // Defaults to the store-backed tracker, so routing keeps learning across launches.
+        self.performanceTracker = performanceTracker ?? ProviderPerformanceTracker()
     }
 
     /// Route a request to the best available provider.
@@ -39,18 +45,22 @@ public actor SmartRouter {
         providers: [any AIProvider],
         budgetRemaining: Double?
     ) async -> RoutingDecision {
+        // Assessed once per route, before any strategy runs: every strategy needs the
+        // same verdict, and running the detector per candidate would repeat the work.
+        let privacy = await privacyGuard?.assess(request)
+
         let decision: RoutingDecision
 
         if case .fixed(let id) = policy.strategy {
-            decision = fixedRoute(id, providers: providers)
+            decision = fixedRoute(id, providers: providers, privacy: privacy)
         } else if case .priority(let order) = policy.strategy {
             decision = await priorityRoute(
-                order, request: request, policy: policy, providers: providers
+                order, request: request, policy: policy, providers: providers, privacy: privacy
             )
         } else {
             decision = await smartRoute(
                 request, policy: policy, providers: providers,
-                budgetRemaining: budgetRemaining
+                budgetRemaining: budgetRemaining, privacy: privacy
             )
         }
 
@@ -76,25 +86,34 @@ private extension SmartRouter {
         }
     }
 
-    func fixedRoute(_ id: ProviderID, providers: [any AIProvider]) -> RoutingDecision {
+    /// Fixed routing names the provider outright, so the privacy assessment is attached to
+    /// the decision for observability but does not filter candidates — the caller has
+    /// already chosen where the request goes.
+    func fixedRoute(
+        _ id: ProviderID,
+        providers: [any AIProvider],
+        privacy: PrivacyReport?
+    ) -> RoutingDecision {
         let alternatives = providers.filter { $0.id != id }.map(\.id)
         guard providers.contains(where: { $0.id == id }) else {
             logger.warning("Fixed route provider \(id.rawValue) not found in registered providers")
             guard let fallback = alternatives.first else {
-                return .unavailable(factors: [])
+                return .unavailable(factors: [], privacyReport: privacy)
             }
             return RoutingDecision(
                 selectedProvider: fallback,
                 reason: "Fixed provider \(id.displayName) not registered — fell back to \(fallback.displayName)",
                 alternativeProviders: Array(alternatives.dropFirst()),
-                factors: []
+                factors: [],
+                privacyReport: privacy
             )
         }
         return RoutingDecision(
             selectedProvider: id,
             reason: "Fixed routing to \(id.displayName)",
             alternativeProviders: alternatives,
-            factors: []
+            factors: [],
+            privacyReport: privacy
         )
     }
 
@@ -102,7 +121,8 @@ private extension SmartRouter {
         _ order: [ProviderID],
         request: AIRequest,
         policy: RoutingPolicy,
-        providers: [any AIProvider]
+        providers: [any AIProvider],
+        privacy: PrivacyReport?
     ) async -> RoutingDecision {
         var factors: [RoutingFactor] = []
         let connectivity = await connectivityCheck()
@@ -110,7 +130,7 @@ private extension SmartRouter {
 
         let filtered = filterByConstraints(
             providers, policy: policy, request: request,
-            connectivity: connectivity, factors: &factors
+            connectivity: connectivity, privacy: privacy, factors: &factors
         )
         let available = await filterAvailable(filtered)
         let availableIDs = Set(available.map(\.id))
@@ -120,14 +140,15 @@ private extension SmartRouter {
             : order.filter { availableIDs.contains($0) }
 
         guard let first = ordered.first else {
-            return .unavailable(factors: factors)
+            return .unavailable(factors: factors, privacyReport: privacy)
         }
 
         return RoutingDecision(
             selectedProvider: first,
             reason: "Priority routing — first available",
             alternativeProviders: Array(ordered.dropFirst()),
-            factors: factors
+            factors: factors,
+            privacyReport: privacy
         )
     }
 
@@ -135,7 +156,8 @@ private extension SmartRouter {
         _ request: AIRequest,
         policy: RoutingPolicy,
         providers: [any AIProvider],
-        budgetRemaining: Double?
+        budgetRemaining: Double?,
+        privacy: PrivacyReport?
     ) async -> RoutingDecision {
         var factors: [RoutingFactor] = []
 
@@ -145,17 +167,19 @@ private extension SmartRouter {
 
         let filtered = filterByConstraints(
             providers, policy: policy, request: request,
-            connectivity: connectivity, factors: &factors
+            connectivity: connectivity, privacy: privacy, factors: &factors
         )
 
         let available = await filterAvailable(filtered)
         guard !available.isEmpty else {
             logger.warning("No providers available after filtering")
-            return .unavailable(factors: factors)
+            return .unavailable(factors: factors, privacyReport: privacy)
         }
 
         // Run request analysis for intelligent routing
-        let analysis = analyser.analyse(request, providers: available)
+        let analysis = await analyser.analyse(
+            request, providers: available, classifier: taskClassifier
+        )
 
         let planner = TokenBudgetPlanner()
         let weights = scoringWeights(for: policy.strategy)
@@ -177,7 +201,9 @@ private extension SmartRouter {
             }
         }
 
-        applyEnvironmentAdjustments(&scores, device: device, budgetRemaining: budgetRemaining, factors: &factors)
+        let excluded = applyEnvironmentAdjustments(
+            &scores, device: device, budgetRemaining: budgetRemaining, factors: &factors
+        )
 
         if case .smart = policy.strategy, !device.isThermallyConstrained {
             applyComplexityAdjustments(&scores, analysis: analysis)
@@ -185,9 +211,12 @@ private extension SmartRouter {
         }
         await applyPerformanceAdjustments(&scores, analysis: analysis)
         await applyHealthAdjustments(&scores)
+        enforceExclusions(&scores, excluded: excluded)
         scores.sort { $0.adjustedScore > $1.adjustedScore }
 
-        return buildDecision(from: scores, factors: factors, analysis: analysis)
+        return buildDecision(
+            from: scores, factors: factors, analysis: analysis, privacy: privacy
+        )
     }
 
     func filterByConstraints(
@@ -195,6 +224,7 @@ private extension SmartRouter {
         policy: RoutingPolicy,
         request: AIRequest,
         connectivity: ConnectivityState,
+        privacy: PrivacyReport?,
         factors: inout [RoutingFactor]
     ) -> [any AIProvider] {
         var candidates = providers
@@ -214,7 +244,7 @@ private extension SmartRouter {
             candidates = candidates.filter { $0.id.tier == .cloud }
         }
 
-        let forceLocal = privacyGuard?.shouldForceLocal(for: request) ?? false
+        let forceLocal = privacy?.forcesOnDevice ?? false
         let hasPrivateTags = !request.tags.isDisjoint(with: policy.privacyTags)
 
         if forceLocal || hasPrivateTags {
@@ -318,12 +348,20 @@ private extension SmartRouter {
         }
     }
 
+    /// Applies device and budget state to the scores, and reports which providers the
+    /// environment has *excluded* rather than merely penalised — see `enforceExclusions`.
+    ///
+    /// Thermal pressure is a penalty: a hot device can still serve a local model, just
+    /// worse than a cloud one. An exhausted budget is not a penalty — the request cannot
+    /// be paid for at all — so those providers are reported as excluded.
     func applyEnvironmentAdjustments(
         _ scores: inout [ProviderScore],
         device: DeviceCapabilities,
         budgetRemaining: Double?,
         factors: inout [RoutingFactor]
-    ) {
+    ) -> Set<ProviderID> {
+        var excluded: Set<ProviderID> = []
+
         if device.isThermallyConstrained {
             for i in scores.indices {
                 let tier = scores[i].providerID.tier
@@ -340,18 +378,50 @@ private extension SmartRouter {
         if let budget = budgetRemaining, budget < 0.01 {
             for i in scores.indices where scores[i].providerID.tier == .cloud {
                 scores[i].adjustedScore = 0
+                scores[i].reasoning.append("budget exhausted — cloud excluded")
+                excluded.insert(scores[i].providerID)
             }
             factors.append(.budget(remaining: budget, estimatedCost: 0))
+        }
+
+        return excluded
+    }
+
+    /// Re-applies the environment's exclusions after every additive pass has run.
+    ///
+    /// Without this the zeroing in `applyEnvironmentAdjustments` is only a starting
+    /// value that the passes below it can spend back: `applyComplexityAdjustments` adds
+    /// +15 to exactly the cloud tier an exhausted budget just zeroed whenever the prompt
+    /// reads as complex, which is more than either provider's base score in a typical
+    /// two-provider setup and so puts it back at the top of the decision.
+    ///
+    /// What that costs is a published decision naming a provider the runtime will not
+    /// use: `SpendingGuard` refuses the call under either limit action. `.block` throws,
+    /// and `.fallbackToCheaper` looks for a cheaper candidate — of which there is none
+    /// once the budget is exhausted, so the request is refused either way. The router's
+    /// own "budget exhausted removes cloud" rule was still false in the decision it
+    /// published, which is where callers read it.
+    ///
+    /// Scope: only the budget exclusion is enrolled. The context-window zeroing above is
+    /// rescuable by the same passes and is the same bug class, but it is a separate
+    /// change with its own behaviour consequences and is not made here. The zeroing
+    /// `CapabilityMatcher` applies for a missing capability stays rescuable *by design*
+    /// — that rescue is documented and pinned by tests.
+    func enforceExclusions(_ scores: inout [ProviderScore], excluded: Set<ProviderID>) {
+        guard !excluded.isEmpty else { return }
+        for i in scores.indices where excluded.contains(scores[i].providerID) {
+            scores[i].adjustedScore = 0
         }
     }
 
     func buildDecision(
         from scores: [ProviderScore],
         factors: [RoutingFactor],
-        analysis: RequestAnalysis? = nil
+        analysis: RequestAnalysis? = nil,
+        privacy: PrivacyReport? = nil
     ) -> RoutingDecision {
         guard let best = scores.first, best.adjustedScore > 0 else {
-            return .unavailable(factors: factors)
+            return .unavailable(factors: factors, privacyReport: privacy)
         }
 
         let alternatives = scores.dropFirst()
@@ -378,7 +448,8 @@ private extension SmartRouter {
             confidenceScore: min(best.adjustedScore / 20.0, 1.0),
             factors: factors,
             analysis: analysis,
-            candidateScores: candidates
+            candidateScores: candidates,
+            privacyReport: privacy
         )
     }
 

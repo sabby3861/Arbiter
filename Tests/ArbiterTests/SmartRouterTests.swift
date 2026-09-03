@@ -16,15 +16,22 @@ struct SmartRouterTests {
         DeviceCapabilities(memoryGB: 16, thermalLevel: .serious, processorCount: 8)
     }
 
+    /// Every router built here starts cold on purpose. The production tracker reads the
+    /// shared `com.arbiter.performance` suite, so ten or more recorded requests for a
+    /// provider — left behind by an earlier run of this suite, or by the developer's own
+    /// app — move its score by as much as +15 or -20 and decide assertions that are
+    /// about something else entirely. `.inMemory()` gives each router its own empty store.
     func makeRouter(
         connectivity: (@Sendable () async -> ConnectivityState)? = nil,
         device: (@Sendable () -> DeviceCapabilities)? = nil,
-        privacy: PrivacyGuard? = nil
+        privacy: PrivacyGuard? = nil,
+        performanceTracker: ProviderPerformanceTracker? = nil
     ) -> SmartRouter {
         SmartRouter(
             privacyGuard: privacy,
             connectivityCheck: connectivity ?? Self.onlineState,
-            deviceAssessment: device ?? Self.normalDevice
+            deviceAssessment: device ?? Self.normalDevice,
+            performanceTracker: performanceTracker ?? .inMemory()
         )
     }
 
@@ -145,6 +152,63 @@ struct SmartRouterTests {
 
         let decision = await router.route(request, policy: policy, providers: providers, budgetRemaining: 0.001)
         #expect(decision.selectedProvider == .mlx)
+    }
+
+    /// The zeroing an exhausted budget applies has to survive the passes that run after
+    /// it. `applyComplexityAdjustments` adds +15 to the cloud tier on a complex prompt —
+    /// larger than either provider's whole base score here — so before `enforceExclusions`
+    /// a complex prompt put the zeroed cloud provider straight back at the top: 0 + 15
+    /// against 14 for the free local one. `SpendingGuard` refused the call downstream, so
+    /// nothing reached the provider — but the decision the router published named it, and
+    /// "budget exhausted removes cloud" is a claim about the decision.
+    ///
+    /// Asserted on the decision itself rather than on the outcome of a run: the cloud
+    /// candidate's own score, its absence from the selection, and its absence from the
+    /// alternatives the fallback chain would walk.
+    @Test func budgetExhaustionSurvivesTheComplexityBoostThatWouldUndoIt() async {
+        let router = makeRouter()
+        let policy = RoutingPolicy.smart
+        // Classified `.complex`, which is what arms the +15 cloud boost.
+        let request = AIRequest.chat(
+            "Explain step by step why quantum entanglement violates classical intuition"
+        )
+        let providers: [any AIProvider] = [cloudProvider(), localProvider()]
+
+        let decision = await router.route(
+            request, policy: policy, providers: providers, budgetRemaining: 0.001
+        )
+
+        #expect(decision.analysis?.complexity == .complex || decision.analysis?.complexity == .expert)
+
+        let cloudCandidate = decision.candidateScores.first { $0.provider == .anthropic }
+        #expect(cloudCandidate?.score == 0)
+        #expect(cloudCandidate?.isSelected == false)
+        #expect(decision.selectedProvider == .mlx)
+        #expect(!decision.alternativeProviders.contains(.anthropic))
+    }
+
+    /// The exclusion is a veto on the budget, not a blanket veto on cloud. Asserted on
+    /// the score rather than the selection, so it pins the +15 the test above suppresses:
+    /// with budget left the same prompt scores the cloud provider 11.39 + 15, and the
+    /// local one is untouched at 14 in both tests. That difference is the whole fix —
+    /// nothing else about the two routes differs.
+    @Test func theSameComplexPromptWithBudgetLeftStillPrefersCloud() async {
+        let router = makeRouter()
+        let request = AIRequest.chat(
+            "Explain step by step why quantum entanglement violates classical intuition"
+        )
+        let providers: [any AIProvider] = [cloudProvider(), localProvider()]
+
+        let decision = await router.route(
+            request, policy: .smart, providers: providers, budgetRemaining: 5.00
+        )
+
+        let cloudCandidate = decision.candidateScores.first { $0.provider == .anthropic }
+        let localCandidate = decision.candidateScores.first { $0.provider == .mlx }
+        #expect((cloudCandidate?.score ?? 0) > 20)
+        #expect(cloudCandidate?.reasoning.contains { $0.contains("boosted cloud") } == true)
+        #expect(localCandidate?.score == 14)
+        #expect(decision.selectedProvider == .anthropic)
     }
 
     // MARK: - Thermal constraints
@@ -392,7 +456,9 @@ struct SmartRouterTests {
     // MARK: - Integration: Performance-driven routing
 
     @Test func routerPrefersProviderWithHigherSuccessRate() async {
-        let router = SmartRouter()
+        // The 30 outcomes below used to land in the real `com.arbiter.performance` suite
+        // and stay there, biasing every later router in this process and on this machine.
+        let router = makeRouter()
         let policy = RoutingPolicy(strategy: .smart)
 
         // Record 15 failures for OpenAI on code tasks
@@ -461,7 +527,7 @@ struct SmartRouterTests {
     }
 
     @Test func routerWithNoHistoryDoesNotApplyPerformanceAdjustments() async {
-        let router = SmartRouter()
+        let router = makeRouter()
         let policy = RoutingPolicy(strategy: .smart)
 
         // No performance data recorded — both providers scored equally
@@ -508,7 +574,7 @@ struct SmartRouterTests {
     }
 
     @Test func routerComplexityBoostsCloudForHardTasks() async {
-        let router = SmartRouter()
+        let router = makeRouter()
         let policy = RoutingPolicy(strategy: .smart)
 
         let cloud = MockProvider(
@@ -541,7 +607,7 @@ struct SmartRouterTests {
     }
 
     @Test func routerSimpleTaskBoostsOnDevice() async {
-        let router = SmartRouter()
+        let router = makeRouter()
         let policy = RoutingPolicy(strategy: .smart)
 
         let cloud = MockProvider(

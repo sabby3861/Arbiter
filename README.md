@@ -117,11 +117,13 @@ let analysis: SentimentResult = try await session.send(
 
 **How it works today:** `generate(_:as:)` takes one of two paths, chosen per
 provider. Where the provider can constrain decoding to a schema — OpenAI strict
-mode, Apple Foundation Models' `GenerationSchema` — Arbiter derives a JSON Schema
-from your `Codable` type and sends that, so the model cannot return a shape that
-does not fit. Everywhere else it asks for JSON in the prompt (setting the
-provider's JSON mode where one exists), describing the shape with your `example`
-value when you pass one. Both paths strip markdown fences and decode with
+mode, Anthropic's `output_config.format`, Gemini's
+`generationConfig.responseFormat.text`, Ollama's `format` object and Apple
+Foundation Models' `GenerationSchema`, which is all of them but MLX — Arbiter
+derives a JSON Schema from your `Codable` type and sends that, so the model cannot
+return a shape that does not fit. Everywhere else it asks for JSON in the prompt
+(setting the provider's JSON mode where one exists), describing the shape with your
+`example` value when you pass one. Both paths strip markdown fences and decode with
 `JSONDecoder`; a malformed reply surfaces as `ArbiterError.decodingFailed` with the
 raw content attached, and a model that declines as `ArbiterError.refused`.
 
@@ -131,8 +133,8 @@ and nested structs — but not for a type containing an **enum**, a dictionary o
 self-reference; those fall back to the prompt path automatically, and passing an
 `example` is then the most reliable option. And because fallback can move a request
 to a provider that cannot be constrained, the form is chosen for whoever actually
-serves the request, not once up front. Ollama takes the prompt path until its
-mapper sends a schema object. On Apple FM you can also hand a Swift
+serves the request, not once up front. MLX takes the prompt path: it runs an
+unconstrained local model and has no schema to send. On Apple FM you can also hand a Swift
 `@Generable` type straight to the provider's own `generate(_:as:)`.
 
 ## Tool Execution
@@ -306,14 +308,53 @@ let response = try await ai.generate("Analyze my blood pressure trends", options
 // Or define your own: RequestTag("legal")
 ```
 
-The `PrivacyGuard` can also detect PII automatically:
+The `PrivacyGuard` can also detect sensitive data automatically:
 
 ```swift
 let ai = Arbiter {
-    $0.privacy(.strict)  // Enables PII detection (email, phone, SSN, credit card)
+    $0.privacy(.strict)  // Layered detection + fail-closed routing
 }
-// Requests containing PII are automatically routed on-device
+// Requests containing sensitive data are automatically routed on-device
 ```
+
+Detection runs in layers: patterns for US Social Security and payment-card
+numbers (Luhn-checked), `NSDataDetector` for phone numbers, postal addresses
+and email addresses, and `NLTagger` name tagging for person, organisation and
+place names. An app can add its own `PrivacyClassifier` for categories Arbiter
+does not know about.
+
+Name tagging covers fewer languages than the other layers (English and French
+on current macOS), so a prompt in a language it cannot handle is reported as
+reduced confidence, not as unreadable — the deterministic layers are
+language-independent and still run.
+
+`.strict` fails closed: when nothing could read the request at all — no
+determinable language, an image or PDF the guard cannot see inside, a classifier
+that could not answer — it stays off third-party clouds anyway, and throws
+`ArbiterError.privacyViolation` if no on-device or local provider is
+registered. Every decision carries a `PrivacyReport` listing the
+*categories* detected, never the values:
+
+```swift
+let decision = await router.route(request, policy: .smart, providers: providers, budgetRemaining: nil)
+decision.privacyReport?.sortedTypes   // [emailAddress, personName]
+decision.privacyReport?.confidence    // .high / .heuristic / .unknown
+```
+
+**Two paths bypass the guard, by design.** It filters candidates during `.smart`
+and `.priority` routing only.
+
+- `RequestOptions(provider:)` returns a decision before the router runs. The guard
+  does not merely lose its veto — it never runs at all, so `decision.privacyReport`
+  is `nil` on an explicitly-routed request. Do not rely on it for audit logging
+  there.
+- `.fixed` routing sends the request to the named provider whatever the assessment
+  says. Here the guard *does* run and the report is attached to the decision; only
+  the routing choice is overridden.
+
+If you name a cloud provider explicitly, nothing stops you. Request middleware also
+runs *after* routing on the `generate` path, so text a middleware injects is not
+assessed.
 
 ### Fallback Chain
 
@@ -382,36 +423,70 @@ let ai = Arbiter {
 
 | Provider | Status | Privacy | Capabilities |
 |----------|--------|---------|--------------|
-| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision |
-| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision |
-| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision |
-| Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
+| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision, Tools, Embeddings |
+| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Ollama | ✅ Ready | Local Server | Chat, Code, Vision, Tools, Embeddings |
 | MLX | ✅ Ready | On-Device | Chat, Code, Summarization |
 | Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization, Structured Output |
 
-> **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
+> **On tools:** Anthropic, OpenAI, Gemini and Ollama accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
-> non-streaming responses into `response.toolCalls`. On all three a full
+> non-streaming responses into `response.toolCalls`. On all four a full
 > multi-round conversation replays correctly and streamed calls surface with parsed
 > arguments; OpenAI's opt-in Responses transport does not stream at all. `run(_:tools:)` runs
 > the execution loop on top of that — see [Tool Execution](#tool-execution) — so
-> you only run the tools yourself if you call `generate`/`chat` directly. Ollama and
-> MLX report `supportsToolCalling == false`.
+> you only run the tools yourself if you call `generate`/`chat` directly. Ollama
+> behaves the same way, with one wrinkle of its own: its API attaches no id to a
+> tool call, so Arbiter synthesises one per turn and its `role: "tool"` replies
+> correlate by tool name. MLX reports `supportsToolCalling == false`.
 >
 > Apple Foundation Models is the odd one out: it reports `false` too, but only
 > because the router cannot see the executors you supply. `run(_:tools:)` supplies
-> them for you, so a run that lands there works. Reporting `false` is a penalty
-> rather than a veto — the router zeroes that provider's capability score for a
-> request carrying tools, so it loses to any provider that reports `true` but can
-> still be chosen when it is the best candidate left. Route explicitly with
-> `RequestOptions(provider: .appleFoundation)` when you mean to be certain. Calling
-> `generate` directly also means binding each `ToolDefinition` to a closure in
-> `AppleFMOptions.tools` yourself:
+> them for you, so a run that lands there works.
+>
+> **`false` disqualifies, it does not merely penalise.** A request carrying tools
+> zeroes the *whole* score of any provider reporting `supportsToolCalling == false`,
+> not one term of a weighted sum, and a best score of zero routes `.unavailable` —
+> which surfaces as `ArbiterError.allProvidersFailed`. Four later score *additions*
+> can rescue it. Two need `.smart` routing on a device that is not thermally
+> constrained: `+15` to an `.onDevice`/`.system` provider for a prompt the analyser
+> calls trivial or simple, and `+10` to a provider declaring `AITask.structuredOutput`
+> on a structured-output task. Two are ungated and apply under every strategy: up to
+> `+15` from recorded performance once a provider has ten or more requests behind it
+> for that task, and `+5` for a provider a configured health monitor has found
+> healthy. So if Apple FM or MLX is the *only* registered provider, a tool request
+> throws under `.privacyFirst`, `.qualityFirst`, `.costOptimized` or
+> `.latencyOptimized`, under thermal pressure, or on a complex non-structured prompt
+> — **while the runtime is cold and no health monitor is configured.** Add a health
+> monitor, or let it accumulate ten requests, and it is served under any strategy.
+> The same path applies to a request carrying an image and a provider reporting
+> `supportsImageInput == false`, and `.priority` routing skips capability matching
+> altogether.
+>
+> A mixed setup is not immune either, though it recovers. `+15` is larger than the
+> gap it closes — scores normalise into roughly the 5–20 range — so under `.smart`
+> on a short prompt a rescued on-device provider can rank *ahead* of a fully capable
+> cloud one and be tried first. The capable provider is next in the fallback chain,
+> so the run still succeeds; what it costs is a wasted attempt, and a hard failure
+> if you have turned fallback off.
+>
+> Route explicitly with `RequestOptions(provider: .appleFoundation)` when you mean
+> to be certain — that bypasses capability matching entirely. (Making this a real
+> penalty rather than a disqualification is a roadmap item; it changes routing
+> behaviour and is not in 0.2.) Calling `generate` directly also means binding each
+> `ToolDefinition` to a closure in `AppleFMOptions.tools` yourself:
 >
 > ```swift
+> // `weather` is an AppleFMToolBinding: a ToolDefinition plus the closure that
+> // runs it, because Apple executes tools inside `respond()`.
+> let weather = AppleFMToolBinding(definition: weatherTool) { arguments in
+>     lookupWeather(city: arguments["city"]?.stringValue ?? "")
+> }
+>
 > let reply = try await ai.generate(prompt, options: .init(
->     provider: .appleFoundation,          // required — routing would skip it
->     tools: [weather.definition],
+>     tools: [weatherTool],
+>     provider: .appleFoundation,          // routing would otherwise skip it
 >     providerOptions: [.appleFoundation: AppleFMOptions(tools: [weather])]
 > ))
 > ```
@@ -430,9 +505,59 @@ let ai = Arbiter {
 > Vision cells as implemented but unverified — see
 > [Feature Status](Documentation/FEATURE_STATUS.md).
 >
+> **On streaming:** Anthropic, Gemini, Ollama, MLX and Apple Foundation Models
+> report `supportsStreaming` unconditionally. OpenAI reports its *default model's*
+> `supportsStreaming` — every model in the catalogue streams today, so the flag is
+> always `true`, but it is model-dependent by construction and a future model that
+> does not stream would flip it. OpenAI's opt-in Responses transport does not
+> stream on any model.
+>
+> **On default models:** a provider built without a model argument — `model:` on
+> the factories, `defaultModel:` on the initialisers — uses
+> `.claudeSonnet5` (Anthropic), `.gpt4o` (OpenAI), `.flash25` (Gemini) and
+> `llama3.2` (Ollama). The OpenAI and Gemini defaults predate their refreshed
+> catalogues, and the default is what `capabilities.maxContextTokens` and the cost
+> estimate the router scores on are taken from — so pass `model:` if you want a
+> current model's window and price:
+>
+> ```swift
+> try $0.cloud(.openAI(from: .keychain, model: .gpt56Terra))
+> ```
+>
 > **✅ Ready** means the provider is implemented and wired into routing, not that
 > every capability in its row is test-covered; Feature Status has the per-feature
 > evidence.
+
+## Provider Options
+
+Each cloud provider exposes its own controls through
+`RequestOptions.providerOptions`, keyed by `ProviderID`. Everything below is
+optional — a request that names none of it behaves exactly as before.
+
+```swift
+let reply = try await ai.generate(prompt, options: .init(
+    providerOptions: [
+        .anthropic: AnthropicOptions(
+            thinking: .adaptive,   // or .extended(budgetTokens:) where the model takes one
+            promptCaching: AnthropicPromptCaching(breakpoints: 2)
+        )
+    ]
+))
+```
+
+| Type | Carries |
+|------|---------|
+| `AnthropicOptions` | `thinking` (validated per model), `thinkingDisplay`, `promptCaching` — at most four breakpoints. Document input with citations rides on `MessageContent.document` |
+| `OpenAIOptions` | `reasoningEffort` for the o-series and GPT‑5 family (validated against each model's published set), `api = .responses` to opt into the Responses transport, `structuredOutputName` |
+| `GeminiOptions` | `thinking` (`thinkingLevel` on Gemini 3, `thinkingBudget` on 2.5), `includeThoughts`, `googleSearch` grounding, `safetySettings`, `cachedContent` |
+| `OllamaOptions` | `keepAlive`, `think`, `numCtx` |
+| `AppleFMOptions` | `sampling`, `useCase`, `guardrails`, LoRA `adapter`, `prewarm`, on-device tool bindings, `conversationID`, `contextOverflow`, `locale`/`enforceLocale`, `reportTokenUsage` |
+
+A model's reasoning comes back in `AIResponse.reasoning` (and as `.thinking`
+content when it carries a replayable signature), grounding and document citations
+in `AIResponse.citations`, and cache token counts in `TokenUsage`. See
+[Feature Status](Documentation/FEATURE_STATUS.md) for what each one is tested
+against.
 
 ## On-Device Providers
 
@@ -649,9 +774,16 @@ to ensure they never leave the device. The smart router enforces this.
 are reached, Arbiter falls back to free on-device providers automatically.
 
 **PII detection**: Optional prompt scanning catches email addresses, phone
-numbers, US Social Security numbers and credit-card numbers before they reach
-cloud APIs. Detection is pattern-based — names, addresses and health terms are
-not detected yet, so treat it as a safety net, not a guarantee.
+numbers, postal addresses, US Social Security numbers, payment-card numbers and
+person/organisation/place names before they reach cloud APIs. The pattern and
+`NSDataDetector` layers score 1.00 precision and recall on the labelled corpus
+in `PrivacyDetectionCorpusTests`; name tagging is statistical — 0.69 precision
+and 1.00 recall measured there on macOS 26.5, with the tests enforcing floors of
+0.60 and 0.90 — and every one of its misses on that corpus is a false positive,
+which keeps a request on-device rather than letting one out. It can also miss a
+real name, and health terms and other domain vocabularies need your own
+`PrivacyClassifier`, so treat detection as a strong safety net, not a
+guarantee.
 
 **Redacted logging**: API keys and sensitive headers are automatically
 redacted in all log output.
@@ -714,7 +846,7 @@ one and for the known gaps.
 - [x] Spending guards with budget enforcement
 - [x] Keychain-based secure key storage
 - [x] Smart Router with multi-factor scoring
-- [x] Privacy Guard with PII detection (email, phone, SSN, credit card)
+- [x] Privacy Guard with layered PII detection *(patterns, NSDataDetector, NLTagger names, pluggable classifier, fail-closed `.strict`, category-only `PrivacyReport`)*
 - [x] Cost tracking per provider
 - [x] Fallback chain with automatic retry
 - [x] Environment-aware routing (connectivity, thermal, budget)
@@ -725,7 +857,7 @@ one and for the known gaps.
 - [x] Usage analytics with cross-session persistence
 - [x] Lifecycle management for on-device providers *(no dedicated test yet)*
 - [x] Security documentation and proxy architecture guide
-- [x] Structured output (typed Codable responses; schema-constrained on OpenAI and Apple Foundation Models, prompt-based JSON elsewhere)
+- [x] Structured output (typed Codable responses; schema-constrained on OpenAI, Anthropic, Gemini, Ollama and Apple Foundation Models, prompt-based JSON on MLX)
 - [x] Schema derivation from `Codable` types *(enums, dictionaries and recursive types use the prompt path)*
 - [x] Request intelligence engine (complexity, task detection, cost estimation)
 - [x] Adaptive routing (learns from usage patterns)

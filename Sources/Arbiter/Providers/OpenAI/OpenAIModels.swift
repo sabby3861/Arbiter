@@ -5,9 +5,15 @@ import Foundation
 
 /// Available OpenAI models.
 ///
-/// IDs, context windows, output caps and prices verified 2026-09-01 against
+/// IDs, context windows, output caps and prices verified 2026-09-01, and
+/// re-checked 2026-09-03, against
 /// https://developers.openai.com/api/docs/models and
 /// https://developers.openai.com/api/docs/pricing
+///
+/// Two entries are not fully checkable against those two pages, and say so at
+/// their own case: `gpt-4-turbo`, whose rates the pricing page publishes under
+/// the dated snapshot `gpt-4-turbo-2024-04-09`, and `o1-mini`, which neither
+/// page lists at all.
 ///
 /// Note that the enum is a convenience, not a gate: `AIRequest.model` is a
 /// free-form string, so a preview model or an OpenAI-compatible host's own
@@ -38,9 +44,15 @@ public enum OpenAIModel: String, Sendable, CaseIterable {
     case o4Mini = "o4-mini"
     case o3Mini = "o3-mini"
     case o1 = "o1"
+    /// GPT‑4 Turbo. The pricing page carries the rates under the dated
+    /// snapshot `gpt-4-turbo-2024-04-09` ($10 / $30) rather than under this
+    /// alias, and the models page no longer lists either form.
     case gpt4Turbo = "gpt-4-turbo"
-    /// o1‑mini — superseded by `o3-mini`, which the docs present as its
-    /// replacement at the same price. Kept so stored conversations resolve.
+    /// o1‑mini — superseded by `o3-mini`. Kept so stored conversations
+    /// resolve. Neither the models page nor the pricing page lists this ID any
+    /// more, so its rates below are `o3-mini`'s, carried over from when the
+    /// documentation named that model as its replacement at the same price;
+    /// they cannot be re-verified against the current pages.
     @available(*, deprecated, message: "Superseded by .o3Mini at the same price")
     case o1Mini = "o1-mini"
 

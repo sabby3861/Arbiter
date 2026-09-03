@@ -52,7 +52,7 @@ struct UnifiedResponseTests {
 
         var openAIState = OpenAIStreamState()
         var geminiState = GeminiStreamState()
-        var accOllama = ""
+        var ollamaState = OllamaStreamState()
 
         let openAIChunk = openAIMapper.parseStreamEvent(
             """
@@ -80,7 +80,7 @@ struct UnifiedResponseTests {
             """
             {"model":"llama3.2","message":{"role":"assistant","content":"Hi"},"done":false}
             """,
-            accumulated: &accOllama
+            state: &ollamaState
         )
 
         // All produce valid chunks with same delta

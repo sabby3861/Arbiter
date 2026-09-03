@@ -61,7 +61,7 @@ public struct GeminiProvider: AIProvider, Sendable {
         self.init(resolvedKey: apiKey, baseURL: baseURL, defaultModel: defaultModel)
     }
 
-    private init(resolvedKey: String, baseURL: URL?, defaultModel: GeminiModel) {
+    init(resolvedKey: String, baseURL: URL?, defaultModel: GeminiModel = .flash25) {
         self.apiKey = resolvedKey
         self.baseURL = baseURL ?? Self.defaultBaseURL
         self.defaultModel = defaultModel
