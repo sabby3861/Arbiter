@@ -257,9 +257,20 @@ extension Arbiter {
 
         let providerOrder = buildProviderOrder(from: decision)
         var attempts: [(ProviderID, any Error & Sendable)] = []
+        var budgetRefusals = 0
+        var reorderedForBudget = false
         let policy = executionPolicy(options: options)
 
-        for providerID in providerOrder.prefix(policy.providerAttemptLimit) {
+        // A queue rather than a `for` loop: a budget refusal re-orders what is left of it.
+        //
+        // The attempt limit counts providers actually *sent to*, which is what
+        // `ExecutionPolicy` defines it as. A provider the budget refused was never
+        // touched, so spending a slot on it would let three refusals exhaust the chain
+        // before the one candidate that fits the remaining budget is ever reached.
+        var remaining = providerOrder
+        var sends = 0
+        while !remaining.isEmpty, sends < policy.providerAttemptLimit {
+            let providerID = remaining.removeFirst()
             guard let provider = providers.first(where: { $0.id == providerID }) else { continue }
             let startTime = CFAbsoluteTimeGetCurrent()
             do {
@@ -279,8 +290,20 @@ extension Arbiter {
                 return response
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let refusal as BudgetRefusal {
+                // No `recordOutcome`: the budget stopped this before the provider was
+                // called, and scoring it as a failure would teach the router that a
+                // provider is unreliable when all that happened is that it costs money.
+                attempts.append((providerID, refusal.underlying))
+                budgetRefusals += 1
+                logger.debug("Provider \(providerID.rawValue) refused by the budget, trying a cheaper one")
+                if !reorderedForBudget {
+                    reorderedForBudget = true
+                    remaining = await orderedByEstimatedCost(remaining, request: request)
+                }
             } catch {
                 let failureLatency = CFAbsoluteTimeGetCurrent() - startTime
+                sends += 1
                 attempts.append((providerID, error))
                 let detectedTask = decision.analysis?.detectedTask ?? .conversation
                 await router.performanceTracker.recordOutcome(
@@ -294,6 +317,13 @@ extension Arbiter {
             }
         }
 
+        // Nothing the budget could pay for. Answering `allProvidersFailed` here would
+        // describe an outage the caller does not have; the limit that actually refused is
+        // the answer. Only when *every* candidate was refused on cost — a provider that
+        // failed for its own reasons still belongs in an `allProvidersFailed` list.
+        if budgetRefusals == attempts.count, let refusal = attempts.last?.1 {
+            throw refusal
+        }
         throw ArbiterError.allProvidersFailed(attempts: attempts)
     }
 
@@ -304,6 +334,8 @@ extension Arbiter {
         allowQualityRetry: Bool = true
     ) async throws -> AIResponse {
         let processedRequest = try await applyRequestMiddleware(request)
+        // Throws rather than returning an unreserved `nil` when the guard refuses, so no
+        // request reaches a priced provider without being counted against the budget.
         let reservation = try await reserveBudget(for: provider, request: processedRequest)
         // A reservation is settled exactly once. Without this, a failure *after* the
         // response was priced — a validation throw, or the quality retry throwing — would
@@ -562,12 +594,50 @@ extension Arbiter {
         return request
     }
 
+    /// Reserve the estimated cost of `request` against `provider`, or refuse the provider.
+    ///
+    /// A `nil` return means there is nothing to reserve — no spending guard is configured,
+    /// or the provider's tier costs nothing. It never means "the guard said no": a guard
+    /// that refuses throws, so no path through this method lets a priced request reach a
+    /// cloud provider unreserved and therefore unbilled.
+    ///
+    /// Under `.fallbackToCheaper` the refusal is wrapped in ``BudgetRefusal`` rather than
+    /// thrown bare, because the fallback loop treats it differently from a provider
+    /// failure: the provider was never called, so there is nothing to record against it,
+    /// and the remaining candidates are worth re-ordering by cost before the next attempt.
     func reserveBudget(for provider: any AIProvider, request: AIRequest) async throws -> SpendingGuard.Reservation? {
         guard let spendingGuard, provider.id.tier == .cloud else { return nil }
         let estimatedCost = await costTracker.estimateRequestCost(
             request: request, capabilities: provider.capabilities
         )
-        return try await spendingGuard.reserveBudget(estimatedCost: estimatedCost)
+        switch await spendingGuard.attemptReservation(estimatedCost: estimatedCost) {
+        case .reserved(let reservation):
+            return reservation
+        case .refused(let error):
+            guard spendingGuard.shouldFallbackOnBudgetExceeded else { throw error }
+            throw BudgetRefusal(underlying: error)
+        }
+    }
+
+    /// Orders `candidates` by what this request would cost on each, cheapest first.
+    ///
+    /// The fallback chain arrives in routing-score order, which weighs cost against
+    /// latency, capability and health. Once the budget has refused a provider none of
+    /// that is the question any more — what is left to decide is which candidate the
+    /// remaining budget can still pay for — so the untried remainder is re-ordered by
+    /// estimated cost. Providers that cost nothing estimate at zero and sort first;
+    /// equal costs keep their existing relative order.
+    func orderedByEstimatedCost(_ candidates: [ProviderID], request: AIRequest) async -> [ProviderID] {
+        var priced: [(index: Int, id: ProviderID, cost: Double)] = []
+        for (index, id) in candidates.enumerated() {
+            guard let provider = providers.first(where: { $0.id == id }) else { continue }
+            let cost = await costTracker.estimateRequestCost(
+                request: request, capabilities: provider.capabilities
+            )
+            priced.append((index, id, cost))
+        }
+        priced.sort { $0.cost == $1.cost ? $0.index < $1.index : $0.cost < $1.cost }
+        return priced.map(\.id)
     }
 
     func finalizeCost(
@@ -658,6 +728,15 @@ extension Arbiter {
                 return CancellationError()
             } catch let streamError as StreamingFallbackUnsafe {
                 return streamError.underlying
+            } catch let refusal as BudgetRefusal {
+                // Fail-closed as in `performGenerate`, but not by the same rule: there is
+                // no cost re-ordering and no all-refusals terminal case here, so a
+                // provider failure followed by a budget refusal reports the refusal alone
+                // where `generate` would report both. Unwrapped either way, so the caller
+                // sees the limit rather than an internal sentinel.
+                lastError = refusal.underlying
+                logger.debug("Stream provider \(providerID.rawValue) refused by the budget, trying the next")
+                continue
             } catch {
                 lastError = error
                 logger.debug("Stream provider \(providerID.rawValue) failed, trying next")
@@ -704,6 +783,17 @@ extension Arbiter {
 /// Retrying with another provider would corrupt the consumer's output stream.
 private struct StreamingFallbackUnsafe: Error {
     let underlying: any Error & Sendable
+}
+
+/// Sentinel error: the spending guard refused a provider under `.fallbackToCheaper`,
+/// before the request was sent.
+///
+/// It is not the same thing as a provider failing, and the two are handled differently:
+/// a refused provider was never called, so it earns no performance record, and the
+/// candidates behind it are worth re-ordering by cost. Every path that can surface it to
+/// a caller unwraps ``underlying`` first — this type is a routing signal, not an answer.
+struct BudgetRefusal: Error {
+    let underlying: ArbiterError
 }
 
 /// Configuration options for individual requests

@@ -108,15 +108,18 @@ final class TrackingMockProvider: AIProvider, @unchecked Sendable {
 
     var callCount: Int { _callCount.value }
 
+    /// `capabilities` is injectable so a test can give two providers different prices;
+    /// the default is unchanged, so callers that do not care are unaffected.
     init(
         id: ProviderID = .anthropic,
         failCount: Int = 0,
-        responseContent: String = "Tracking response"
+        responseContent: String = "Tracking response",
+        capabilities: ProviderCapabilities? = nil
     ) {
         self.id = id
         self.failCount = failCount
         self.responseContent = responseContent
-        self.capabilities = ProviderCapabilities(
+        self.capabilities = capabilities ?? ProviderCapabilities(
             supportedTasks: [.chat], maxContextTokens: 100_000,
             supportsStreaming: true, supportsToolCalling: false, supportsImageInput: false,
             costPerMillionInputTokens: 1.0, costPerMillionOutputTokens: 5.0,
