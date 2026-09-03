@@ -464,10 +464,22 @@ struct ToolLoopTests {
     }
 
     @Test func aProviderReportingNoToolSupportIsPenalisedNotDisqualified() async throws {
-        // The router zeroes the *capability term* for such a provider, which is a penalty
-        // in a weighted score, not a veto. Documented as such because the difference
-        // decides whether a lone on-device provider serves a tool request or the request
-        // fails outright.
+        // Narrow claim: this passes because of the *one* configuration that rescues a
+        // zeroed score, and pins that configuration rather than a general mechanism.
+        // `CapabilityMatcher.score` zeroes the whole score — not just the capability
+        // term — for a provider that reports `supportsToolCalling == false` on a request
+        // carrying tools, and `SmartRouter.buildDecision` reports `.unavailable` for a
+        // best score of 0. What saves this run is `applyComplexityAdjustments`, which
+        // adds +15 to an `.onDevice`/`.system` provider — but only under `.smart`, only
+        // when the device is not thermally constrained, and only for a trivial or simple
+        // prompt, which is why the prompt here is "Go". Three other additive rescues
+        // exist and none of them applies here: `applyTaskAdjustments` is behind the same
+        // gate and keys on a `.structuredOutput` task this provider's `[.chat]` set does
+        // not declare, `applyHealthAdjustments` needs a configured monitor, and
+        // `applyPerformanceAdjustments` needs ten recorded requests. Change any of the
+        // gate conditions and a cold, unmonitored lone Apple FM or MLX provider given
+        // tools throws `allProvidersFailed`.
+        // `filterByConstraints` has no tool filter, so nothing else removes it.
         let recorder = CallRecorder()
         let provider = ScriptedProvider(
             id: .appleFoundation,

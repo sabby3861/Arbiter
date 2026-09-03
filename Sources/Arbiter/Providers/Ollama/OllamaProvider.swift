@@ -33,7 +33,8 @@ public struct OllamaProvider: AIProvider, Sendable {
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(
             supportedTasks: [.chat, .completion, .codeGeneration, .summarization,
-                             .translation, .structuredOutput],
+                             .translation, .structuredOutput, .imageUnderstanding,
+                             .embedding],
             maxContextTokens: 128_000,
             supportsStreaming: true,
             supportsToolCalling: true,
