@@ -29,8 +29,11 @@ public struct MLXProviderConfiguration: Sendable {
 
 #if canImport(MLX) && canImport(MLXLLM)
 import MLX
+import HuggingFace
 @preconcurrency import MLXLMCommon
+import MLXHuggingFace
 import MLXLLM
+import Tokenizers
 
 /// Thread-safe cache for loaded MLX model containers.
 ///
@@ -134,7 +137,7 @@ public struct MLXProvider: AIProvider, UnloadableProvider, Sendable {
         }
 
         if let cacheLimit = configuration.gpuCacheLimit {
-            MLX.GPU.set(cacheLimit: Int(clamping: cacheLimit))
+            MLX.Memory.cacheLimit = Int(clamping: cacheLimit)
         }
     }
 
@@ -156,31 +159,35 @@ public struct MLXProvider: AIProvider, UnloadableProvider, Sendable {
             // (via processor.prepare → tokenizer.applyChatTemplate), preserving
             // multi-turn context without the double-formatting that ChatSession
             // would introduce (it wraps the entire input as a single user message).
-            let result: GenerateResult = try await container.perform { context in
-                let userInput = UserInput(chat: chatMessages)
-                let lmInput = try await context.processor.prepare(input: userInput)
-                return try MLXLMCommon.generate(
-                    input: lmInput,
-                    parameters: parameters,
-                    context: context
-                ) { tokens in
-                    if let max = parameters.maxTokens, tokens.count >= max {
-                        return .stop
-                    }
-                    return .more
+            let lmInput = try await container.prepare(input: UserInput(chat: chatMessages))
+            let tokenStream = try await container.generate(input: lmInput, parameters: parameters)
+            var output = ""
+            var completionInfo: GenerateCompletionInfo?
+
+            for await generation in tokenStream {
+                try Task.checkCancellation()
+                switch generation {
+                case .chunk(let chunk):
+                    output += chunk
+                case .info(let info):
+                    completionInfo = info
+                case .toolCall:
+                    break
                 }
             }
 
-            let hitMaxTokens = parameters.maxTokens.map { result.generationTokenCount >= $0 } ?? false
+            let inputTokens = completionInfo?.promptTokenCount ?? 0
+            let outputTokens = completionInfo?.generationTokenCount ?? 0
+            let hitMaxTokens = parameters.maxTokens.map { outputTokens >= $0 } ?? false
 
             return AIResponse(
                 id: "mlx-\(UUID().uuidString)",
-                content: result.output,
+                content: output,
                 model: resolvedModelId,
                 provider: .mlx,
                 usage: TokenUsage(
-                    inputTokens: result.promptTokenCount,
-                    outputTokens: result.generationTokenCount
+                    inputTokens: inputTokens,
+                    outputTokens: outputTokens
                 ),
                 finishReason: hitMaxTokens ? .maxTokens : .complete
             )
@@ -212,7 +219,9 @@ private extension MLXProvider {
         let modelId = resolvedModelId
         do {
             return try await containerCache.load(for: modelId) {
-                try await loadModelContainer(id: modelId)
+                try await #huggingFaceLoadModelContainer(
+                    configuration: ModelConfiguration(id: modelId)
+                )
             }
         } catch {
             logger.error("Failed to load MLX model '\(modelId)': \(error.localizedDescription)")
@@ -287,27 +296,20 @@ private extension MLXProvider {
         // Stream tokens using ModelContainer directly with structured messages.
         // See buildChatMessages() for why we bypass ChatSession.
         do {
-            try await container.perform { context in
-                let userInput = UserInput(chat: chatMessages)
-                let lmInput = try await context.processor.prepare(input: userInput)
-                let tokenStream: AsyncStream<Generation> = try MLXLMCommon.generate(
-                    input: lmInput,
-                    parameters: parameters,
-                    context: context
-                )
+            let lmInput = try await container.prepare(input: UserInput(chat: chatMessages))
+            let fallbackInputTokens = lmInput.text.tokens.size
+            let tokenStream = try await container.generate(input: lmInput, parameters: parameters)
+            let (accumulated, completionInfo) = try await consumeTokenStream(
+                tokenStream, continuation: continuation
+            )
 
-                let (accumulated, completionInfo) = try await consumeTokenStream(
-                    tokenStream, continuation: continuation
-                )
-
-                yieldFinalChunk(
-                    accumulated: accumulated,
-                    completionInfo: completionInfo,
-                    fallbackInputTokens: lmInput.text.tokens.size,
-                    parameters: parameters,
-                    continuation: continuation
-                )
-            }
+            yieldFinalChunk(
+                accumulated: accumulated,
+                completionInfo: completionInfo,
+                fallbackInputTokens: fallbackInputTokens,
+                parameters: parameters,
+                continuation: continuation
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch {
