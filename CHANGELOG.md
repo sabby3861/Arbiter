@@ -345,6 +345,31 @@ than a patch.
   Apple's KV cache between turns for correct bookkeeping; a tool-free run is unaffected.
 
 ### Fixed
+- **The spending guard no longer fails open under `.fallbackToCheaper`.** When that limit
+  action was set and a request would breach the budget, the guard declined to reserve and
+  the runtime sent the request anyway — it reached a paid provider unreserved, so real
+  money was spent without being counted against the limit, and every later request was
+  priced against a total that was too low. The refusal is now acted on: the request moves
+  to the cheapest of its remaining fallback candidates whose estimated cost still fits,
+  and is reserved and billed against *that* provider. If none fits — including when
+  `fallbackEnabled` is off and there are no candidates behind the first — the request is
+  refused with `budgetExceeded` (or `dailyLimitExceeded`, whichever limit stopped it)
+  rather than sent. A provider refused on cost is neither recorded as having failed nor
+  counted against `maxFallbackProviders`, since it was never called.
+  `SpendingGuard.reserveBudget(estimatedCost:)` is unchanged for callers — it still returns
+  `nil` under `.fallbackToCheaper` — but that `nil` means "refused", never "free to
+  proceed".
+- **Budget-exhausted streaming reports the routing outcome, not the limit.** Under a
+  scored strategy (`.smart` and the other strategies that rank candidates), an exhausted
+  budget now removes cloud providers from the routing decision itself, where a prompt
+  classified as complex could previously win one of them back. In the case that produced
+  — budget exhausted, complex prompt, only cloud providers registered — `stream` now
+  fails with `allProvidersFailed`, the absence of a usable provider, rather than
+  `budgetExceeded`. Callers matching on `budgetExceeded` to detect it should match
+  `allProvidersFailed` as well. Unaffected: `.priority` (including the default
+  `.firstAvailable`), `.fixed` and `RequestOptions(provider:)`, which do not score
+  candidates and so never applied the exclusion — there the spending guard is still what
+  reports the limit.
 - Middleware now applied to both generate and streaming request paths
 - ArbiterChatView retry button works correctly after failed requests
 - Client-side rate limit no longer reports as Anthropic-specific error

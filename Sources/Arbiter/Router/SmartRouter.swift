@@ -395,12 +395,12 @@ private extension SmartRouter {
     /// reads as complex, which is more than either provider's base score in a typical
     /// two-provider setup and so puts it back at the top of the decision.
     ///
-    /// What that cost depends on the limit action. Under `.block` — the default —
-    /// `SpendingGuard` refuses the call, so the damage is a published decision naming a
-    /// provider the runtime will not use. Under `.fallbackToCheaper` it does not refuse
-    /// at all: `reserveBudget` returns `nil` and the request goes out, unreserved and
-    /// unbilled. Either way the router's own "budget exhausted removes cloud" rule was
-    /// false in the decision it published, which is where callers read it.
+    /// What that costs is a published decision naming a provider the runtime will not
+    /// use: `SpendingGuard` refuses the call under either limit action. `.block` throws,
+    /// and `.fallbackToCheaper` looks for a cheaper candidate — of which there is none
+    /// once the budget is exhausted, so the request is refused either way. The router's
+    /// own "budget exhausted removes cloud" rule was still false in the decision it
+    /// published, which is where callers read it.
     ///
     /// Scope: only the budget exclusion is enrolled. The context-window zeroing above is
     /// rescuable by the same passes and is the same bug class, but it is a separate
