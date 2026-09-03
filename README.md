@@ -76,10 +76,11 @@ try await session.send("What is SwiftUI?", using: ai)
 // session.messages is @Observable — your UI updates automatically
 ```
 
-> **Note:** when a turn is routed to Apple Foundation Models, only the latest user
-> message is sent — conversation history is not yet forwarded to the on-device
-> model. Text history reaches every other provider; tool-call turns and image-URL
-> messages are dropped by some mappers, and MLX keeps text turns only. See
+> **Note:** text history reaches every provider, Apple Foundation Models included —
+> a turn routed on-device is replayed as a `Transcript`, and passing a
+> `conversationID` in `AppleFMOptions` reuses one session across turns so Apple's
+> KV cache survives. Tool-call turns and image-URL messages are still dropped by
+> some mappers, and MLX keeps text turns only. See
 > [Feature Status](Documentation/FEATURE_STATUS.md).
 
 ## Structured Output
@@ -114,15 +115,74 @@ let analysis: SentimentResult = try await session.send(
 )
 ```
 
-**How it works today:** this is *prompt-based* JSON, not schema-constrained
-decoding. Arbiter asks the model for JSON (setting the provider's JSON mode where
-one exists), describes the shape in the prompt — using your `example` value when
-you pass one — then strips any markdown fences and decodes the reply with
-`JSONDecoder`. A malformed reply surfaces as `ArbiterError.decodingFailed` with the
-raw content attached. `generate(_:as:)` does not yet route through provider-native
-constrained decoding, so passing an example is the most reliable option for complex
-types. Passing `ResponseFormat.structured(schema:)` yourself does reach OpenAI as a
-strict JSON schema; Gemini `responseSchema` and Apple's `@Generable` are still to come.
+**How it works today:** `generate(_:as:)` takes one of two paths, chosen per
+provider. Where the provider can constrain decoding to a schema — OpenAI strict
+mode, Apple Foundation Models' `GenerationSchema` — Arbiter derives a JSON Schema
+from your `Codable` type and sends that, so the model cannot return a shape that
+does not fit. Everywhere else it asks for JSON in the prompt (setting the
+provider's JSON mode where one exists), describing the shape with your `example`
+value when you pass one. Both paths strip markdown fences and decode with
+`JSONDecoder`; a malformed reply surfaces as `ArbiterError.decodingFailed` with the
+raw content attached, and a model that declines as `ArbiterError.refused`.
+
+Two things to know. The schema is derived by asking your type to decode itself
+from a recording decoder, which works for structs of primitives, optionals, arrays
+and nested structs — but not for a type containing an **enum**, a dictionary or a
+self-reference; those fall back to the prompt path automatically, and passing an
+`example` is then the most reliable option. And because fallback can move a request
+to a provider that cannot be constrained, the form is chosen for whoever actually
+serves the request, not once up front. Ollama takes the prompt path until its
+mapper sends a schema object. On Apple FM you can also hand a Swift
+`@Generable` type straight to the provider's own `generate(_:as:)`.
+
+## Tool Execution
+
+`run(_:tools:)` sends the conversation, runs whatever tools the model calls, feeds
+the results back and repeats until it answers:
+
+```swift
+let weather = FunctionTool(
+    name: "get_weather",
+    description: "Current conditions for a city",
+    inputSchema: ["type": "object", "properties": ["city": ["type": "string"]]]
+) { arguments, _ in
+    guard case .object(let fields) = arguments,
+          case .string(let city)? = fields["city"] else { return "Unknown city" }
+    return try await weatherService.summary(for: city)
+}
+
+let result = try await ai.run("Weather in Paris — do I need a coat?", tools: [weather])
+print(result.content)          // the model's answer
+print(result.invocations)      // every call it made, and what came back
+```
+
+The calls of one turn run concurrently; set `isConcurrencySafe: false` on a tool
+that must not overlap others and it runs alone, in the order the model asked. Each
+tool may set a `timeout`, and a tool that throws or overruns is reported to the
+model — which can then explain or try something else — rather than aborting the
+run. `maxToolRounds` (8 by default) bounds the loop; hitting it ends the run with
+`stoppedAtRoundLimit` set.
+
+**Human in the loop:** a tool that returns `.requiresApproval(payload:)` suspends
+the run until someone answers:
+
+```swift
+for await request in await ai.pendingApprovals {
+    if userConfirms(request.payload) {
+        await ai.approve(request.id)
+    } else {
+        await ai.deny(request.id, reason: "not now")
+    }
+}
+```
+
+A denial is reported to the model as the call's result, so it can carry on without
+that tool. `runStream(_:tools:)` yields the same run as events — text deltas, tool
+calls started, approvals requested, results — finishing with the `RunResult`.
+
+Apple Foundation Models runs tools inside its own session, so a run routed there
+executes the same tools through the same approval, timeout and reporting path and
+finishes in one round.
 
 ## Intelligent Routing
 
@@ -201,10 +261,9 @@ let estimates = await ai.estimateCost("Write a detailed essay about AI")
 for estimate in estimates {
     print("\(estimate.provider): $\(estimate.estimatedCost)")
 }
-// Anthropic: $0.0031
-// OpenAI: $0.0024
-// Gemini: $0.0012
-// MLX: $0.0000
+// One line per configured provider, priced from that provider's own
+// per-million rates against the estimated token counts. On-device
+// providers report $0.
 ```
 
 ### Three-Tier Architecture
@@ -285,7 +344,9 @@ let ai = Arbiter {
 
 ## Per-Request Timeout
 
-Override the default 30-second timeout for individual requests:
+Put a deadline on an individual request. This is Arbiter's own timeout, applied to each
+attempt on top of the 30-second `URLSession` request timeout the HTTP providers configure
+for themselves — there is no Arbiter-level default to override:
 
 ```swift
 let options = RequestOptions(timeout: .seconds(60))
@@ -294,7 +355,9 @@ let response = try await ai.generate("Write a long essay", options: options)
 
 ## Retry Configuration
 
-Configure automatic retries for single-provider setups:
+Configure automatic retries. A transient failure is retried against the same provider
+before the request moves on to the next one, so this applies whether or not fallback is
+enabled:
 
 ```swift
 let ai = Arbiter {
@@ -324,20 +387,41 @@ let ai = Arbiter {
 | Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision |
 | Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
 | MLX | ✅ Ready | On-Device | Chat, Code, Summarization |
-| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization |
+| Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization, Structured Output |
 
 > **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
-> non-streaming responses into `response.toolCalls`. On Anthropic and OpenAI a full
+> non-streaming responses into `response.toolCalls`. On all three a full
 > multi-round conversation replays correctly and streamed calls surface with parsed
-> arguments; on Gemini tool calls are still not surfaced while streaming, and
-> OpenAI's opt-in Responses transport does not stream at all. There is no execution
-> loop on any provider — you run the tools
-> yourself. Ollama, MLX and Apple Foundation
-> Models report `supportsToolCalling == false`. See
+> arguments; OpenAI's opt-in Responses transport does not stream at all. `run(_:tools:)` runs
+> the execution loop on top of that — see [Tool Execution](#tool-execution) — so
+> you only run the tools yourself if you call `generate`/`chat` directly. Ollama and
+> MLX report `supportsToolCalling == false`.
+>
+> Apple Foundation Models is the odd one out: it reports `false` too, but only
+> because the router cannot see the executors you supply. `run(_:tools:)` supplies
+> them for you, so a run that lands there works. Reporting `false` is a penalty
+> rather than a veto — the router zeroes that provider's capability score for a
+> request carrying tools, so it loses to any provider that reports `true` but can
+> still be chosen when it is the best candidate left. Route explicitly with
+> `RequestOptions(provider: .appleFoundation)` when you mean to be certain. Calling
+> `generate` directly also means binding each `ToolDefinition` to a closure in
+> `AppleFMOptions.tools` yourself:
+>
+> ```swift
+> let reply = try await ai.generate(prompt, options: .init(
+>     provider: .appleFoundation,          // required — routing would skip it
+>     tools: [weather.definition],
+>     providerOptions: [.appleFoundation: AppleFMOptions(tools: [weather])]
+> ))
+> ```
+>
+> Apple runs the tools inside `respond()`, so the turn comes back `.complete`,
+> never `.toolCall`, and `response.toolCalls` records what already ran rather than
+> what you must run. See
 > [Feature Status](Documentation/FEATURE_STATUS.md) for the per-provider detail
 > and [Tool Calling Guide](Documentation/ToolCallingGuide.md) for the manual
-> handling pattern that does work today.
+> handling pattern.
 >
 > **On vision:** base64 image input is mapped to each provider's format. Image
 > *URLs* are passed straight through to OpenAI (which fetches them itself) and are
@@ -380,6 +464,25 @@ Uses Apple's built-in on-device model via the FoundationModels framework. Requir
 ```swift
 $0.system(AppleFoundationProvider())
 ```
+
+`AppleFMOptions` exposes the framework's own controls — sampling mode, use case,
+guardrails, a LoRA adapter, prewarming, on-device tool bindings, and an opt-in
+summarise-and-retry strategy for context overflow:
+
+```swift
+let options = AppleFMOptions(
+    conversationID: chat.id.uuidString,   // reuse one session across turns
+    contextOverflow: .summarizeAndRetry   // condense old turns instead of failing
+)
+let reply = try await ai.generate(prompt, options: .init(
+    providerOptions: [.appleFoundation: options]
+))
+```
+
+Errors are mapped individually rather than flattened: a full context window surfaces as
+`ArbiterError.contextWindowExceeded`, a refusal as `.refused`, an unsupported language as
+`.unsupportedLanguage`, and a busy session as `.busy` — so the router can fall back on the
+ones worth falling back on and retry the ones worth retrying.
 
 Check availability in SwiftUI:
 
@@ -605,8 +708,9 @@ one and for the known gaps.
 - [x] Google Gemini provider
 - [x] Ollama local provider
 - [x] Streaming (SSE + NDJSON)
-- [x] Tool definitions passthrough (no execution loop yet)
-- [x] Conversation session management *(history is not yet sent to Apple Foundation Models)*
+- [x] Tool definitions passthrough
+- [x] Tool execution loop *(parallel calls, per-tool timeouts, human-in-the-loop approval)*
+- [x] Conversation session management
 - [x] Spending guards with budget enforcement
 - [x] Keychain-based secure key storage
 - [x] Smart Router with multi-factor scoring
@@ -615,13 +719,14 @@ one and for the known gaps.
 - [x] Fallback chain with automatic retry
 - [x] Environment-aware routing (connectivity, thermal, budget)
 - [x] MLX on-device provider
-- [x] Apple Foundation Models provider
+- [x] Apple Foundation Models provider *(transcript history, constrained decoding, on-device tools, typed errors, measured token usage)*
 - [x] SwiftUI components (ChatView, ProviderPicker, UsageDashboard, RoutingDebugView)
 - [x] Middleware pipeline (logging, sanitization)
 - [x] Usage analytics with cross-session persistence
 - [x] Lifecycle management for on-device providers *(no dedicated test yet)*
 - [x] Security documentation and proxy architecture guide
-- [x] Structured output (typed Codable responses, prompt-based JSON — not schema-constrained)
+- [x] Structured output (typed Codable responses; schema-constrained on OpenAI and Apple Foundation Models, prompt-based JSON elsewhere)
+- [x] Schema derivation from `Codable` types *(enums, dictionaries and recursive types use the prompt path)*
 - [x] Request intelligence engine (complexity, task detection, cost estimation)
 - [x] Adaptive routing (learns from usage patterns)
 - [x] Pre-request cost estimation API
@@ -635,7 +740,6 @@ one and for the known gaps.
 - [ ] v0.2 — MCP client support
 - [ ] v0.2 — Certificate pinning for cloud providers
 - [ ] v0.3 — Conversation persistence
-- [ ] v0.3 — Tool execution loop (run tools and feed results back automatically)
 
 ## Contributing
 

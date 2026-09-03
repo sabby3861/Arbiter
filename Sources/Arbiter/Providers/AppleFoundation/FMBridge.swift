@@ -241,6 +241,30 @@ enum FMBridge {
         }
     }
 
+    static func sentiment(
+        from source: AppleFMFeedbackSentiment
+    ) -> LanguageModelFeedback.Sentiment {
+        switch source {
+        case .positive: .positive
+        case .negative: .negative
+        case .neutral: .neutral
+        }
+    }
+
+    static func issue(from source: AppleFMFeedbackIssue) -> LanguageModelFeedback.Issue {
+        let category: LanguageModelFeedback.Issue.Category = switch source.category {
+        case .unhelpful: .unhelpful
+        case .tooVerbose: .tooVerbose
+        case .didNotFollowInstructions: .didNotFollowInstructions
+        case .incorrect: .incorrect
+        case .stereotypeOrBias: .stereotypeOrBias
+        case .suggestiveOrSexual: .suggestiveOrSexual
+        case .vulgarOrOffensive: .vulgarOrOffensive
+        case .triggeredGuardrailUnexpectedly: .triggeredGuardrailUnexpectedly
+        }
+        return LanguageModelFeedback.Issue(category: category, explanation: source.explanation)
+    }
+
     // MARK: - FoundationModels -> Arbiter
 
     /// Reads a live session's transcript back into Arbiter's vocabulary.

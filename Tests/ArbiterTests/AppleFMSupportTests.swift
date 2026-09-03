@@ -410,6 +410,105 @@ struct AppleFMSessionStoreTests {
 
         #expect(factory.sessionCount == 2)
     }
+
+    // MARK: - Condensation adoption
+
+    private func history(_ texts: [String]) -> FMTranscript {
+        FMTranscript(entries: texts.map { .prompt(segments: [.text($0)]) })
+    }
+
+    @Test func aRecordedCondensationIsSubstitutedIntoLaterHistory() async {
+        let store = AppleFMSessionStore()
+        let original = history(["one", "two", "three"])
+        let condensed = history(["summary"])
+        await store.recordCondensation(
+            conversationID: "chat", original: original, condensed: condensed
+        )
+
+        // The next turn's builder produces the original history plus the turn just taken.
+        let grown = history(["one", "two", "three", "four"])
+        let adopted = await store.adopted(conversationID: "chat", transcript: grown)
+
+        #expect(adopted == history(["summary", "four"]))
+    }
+
+    @Test func adoptionLeavesAHistoryThatDoesNotExtendTheRecordAlone() async {
+        let store = AppleFMSessionStore()
+        await store.recordCondensation(
+            conversationID: "chat",
+            original: history(["one", "two"]),
+            condensed: history(["summary"])
+        )
+
+        // A caller that edited or trimmed its own history is describing a different
+        // conversation; replaying a summary of turns it removed would be wrong.
+        let edited = history(["one", "different"])
+        #expect(await store.adopted(conversationID: "chat", transcript: edited) == edited)
+
+        // And a record never leaks between conversations.
+        let other = history(["one", "two", "three"])
+        #expect(await store.adopted(conversationID: "other", transcript: other) == other)
+        #expect(await store.adopted(conversationID: nil, transcript: other) == other)
+    }
+
+    /// Repeated overflows compose: each record maps the newest full history onto the newest
+    /// condensed one, so the second summary supersedes the first rather than stacking.
+    @Test func aSecondCondensationSupersedesTheFirst() async {
+        let store = AppleFMSessionStore()
+        await store.recordCondensation(
+            conversationID: "chat", original: history(["one", "two"]), condensed: history(["s1"])
+        )
+        await store.recordCondensation(
+            conversationID: "chat",
+            original: history(["one", "two", "three", "four"]),
+            condensed: history(["s2"])
+        )
+
+        let grown = history(["one", "two", "three", "four", "five"])
+        #expect(await store.adopted(conversationID: "chat", transcript: grown)
+                == history(["s2", "five"]))
+    }
+
+    /// `discard` is called precisely when a session's history overflowed — the moment the
+    /// condensation becomes worth keeping.
+    @Test func discardingASessionKeepsItsCondensation() async throws {
+        let store = AppleFMSessionStore()
+        let original = history(["one", "two"])
+        let factory = MockFMSessionFactory(scripts: [[]])
+
+        _ = try await store.session(
+            conversationID: "chat", transcript: original, identity: "id",
+            make: { try factory.factory(original, AppleFMOptions()) }
+        )
+        await store.recordCondensation(
+            conversationID: "chat", original: original, condensed: history(["summary"])
+        )
+        await store.discard(conversationID: "chat")
+
+        #expect(await store.cachedSession(for: "chat") == nil)
+        #expect(await store.condensation(for: "chat")
+                == AppleFMSessionStore.Condensation(
+                    original: original, condensed: history(["summary"])
+                ))
+    }
+
+    /// Session and record describe one conversation and share a cache slot, so they age
+    /// out together rather than leaving a summary pointing at nothing.
+    @Test func evictionDropsTheCondensationWithTheSession() async throws {
+        let store = AppleFMSessionStore(capacity: 1)
+        let original = history(["one"])
+        let factory = MockFMSessionFactory(scripts: [[]])
+
+        await store.recordCondensation(
+            conversationID: "a", original: original, condensed: history(["summary"])
+        )
+        _ = try await store.session(
+            conversationID: "b", transcript: original, identity: "id",
+            make: { try factory.factory(original, AppleFMOptions()) }
+        )
+
+        #expect(await store.condensation(for: "a") == nil)
+    }
 }
 
 @Suite("AppleFMAvailability")

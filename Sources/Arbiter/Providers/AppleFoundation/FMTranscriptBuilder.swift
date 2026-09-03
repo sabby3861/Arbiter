@@ -176,6 +176,11 @@ enum FMTranscriptBuilder {
                     ))
                 }
 
+            case .thinking:
+                // A `Transcript` has no entry for another model's reasoning, and the
+                // on-device model does not continue from one, so it is left out.
+                continue
+
             case .image, .document:
                 try rejectUnsupportedContent(in: message)
 

@@ -22,6 +22,9 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
         /// `calls` by position, so the recorded transcript grows exactly as a real
         /// session's does — call entries followed by one output entry each.
         case toolTurn(text: String, calls: [FMToolCall], outputs: [String])
+        /// A plain answer that also reports measured token counts, as a real session does
+        /// on an OS new enough to count them.
+        case textWithUsage(String, TokenUsage)
     }
 
     private let lock = NSLock()
@@ -29,6 +32,7 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
     private var _prompts: [String] = []
     private var _settings: [FMGenerationSettings] = []
     private var _isResponding = false
+    private var _feedback: [(sentiment: AppleFMFeedbackSentiment?, issues: [AppleFMFeedbackIssue])] = []
     /// Grows exactly as a real session's does — `respond` appends a prompt entry and a
     /// response entry — so `transcriptFingerprint` models session reuse faithfully.
     private var _liveTranscript: FMTranscript
@@ -78,6 +82,7 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
             // A failed generation leaves the session's transcript untouched.
             let produced: String? = switch step {
             case .text(let text): text
+            case .textWithUsage(let text, _): text
             case .chunks(let chunks): chunks.last ?? ""
             case .toolTurn(let text, _, _): text
             case .failure, .chunksThenFailure: nil
@@ -104,6 +109,10 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
         switch nextStep(prompt: prompt, settings: settings) {
         case .text(let text):
             return FMRunResult(text: text)
+        case .textWithUsage(let text, let usage):
+            // Mirrors `LiveFMSession`: counting is opt-in, so a session asked not to count
+            // reports nothing even when it could.
+            return FMRunResult(text: text, usage: settings.reportTokenUsage ? usage : nil)
         case .chunks(let chunks):
             return FMRunResult(text: chunks.last ?? "")
         case .toolTurn(let text, let calls, _):
@@ -125,6 +134,13 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
             case .text(let text):
                 continuation.yield(FMStreamSnapshot(content: text))
                 continuation.finish()
+            case .textWithUsage(let text, let usage):
+                continuation.yield(FMStreamSnapshot(content: text))
+                // Counts arrive on a final snapshot with unchanged content, as they do live.
+                if settings.reportTokenUsage {
+                    continuation.yield(FMStreamSnapshot(content: text, usage: usage))
+                }
+                continuation.finish()
             case .chunks(let chunks):
                 for chunk in chunks {
                     continuation.yield(FMStreamSnapshot(content: chunk))
@@ -145,6 +161,19 @@ final class MockFMSession: FMSessionRunning, @unchecked Sendable {
                 continuation.finish()
             }
         }
+    }
+
+    /// The feedback this session was asked to file, in order.
+    var feedback: [(sentiment: AppleFMFeedbackSentiment?, issues: [AppleFMFeedbackIssue])] {
+        lock.withLock { _feedback }
+    }
+
+    func feedbackAttachment(
+        sentiment: AppleFMFeedbackSentiment?,
+        issues: [AppleFMFeedbackIssue]
+    ) -> Data {
+        lock.withLock { _feedback.append((sentiment, issues)) }
+        return Data("mock-feedback".utf8)
     }
 }
 

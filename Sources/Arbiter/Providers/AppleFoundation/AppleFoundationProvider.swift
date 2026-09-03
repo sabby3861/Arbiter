@@ -57,14 +57,22 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(
             supportedTasks: [.chat, .summarization, .translation, .structuredOutput],
-            // Roadmap F7-G replaces this literal with the model's reported `contextSize`,
-            // alongside the rest of the token-accounting work.
-            maxContextTokens: 4_096,
+            // The model's own reported window, read once at init, rather than a literal that
+            // goes stale the first time Apple ships a bigger one.
+            maxContextTokens: contextLimit,
             supportsStreaming: true,
-            // Tools run inside the session's own loop, so a turn completes with the tool
-            // results already folded in. See ``AppleFMToolBinding`` for what that means for
-            // a caller expecting `FinishReason.toolCall`.
-            supportsToolCalling: true,
+            // False despite tools working, because this flag is a *routing* signal and the
+            // router cannot see what makes them work. Executors arrive in
+            // ``AppleFMOptions/tools``, which lives in `providerOptions` — invisible to
+            // `CapabilityMatcher` — so a `true` here steers every tool request on-device,
+            // where an unbound tool throws `invalidRequest` and stops the fallback chain
+            // instead of falling through to a provider that can serve it. Tool calling is
+            // fully available today, and `Arbiter.run(_:tools:)` supplies the bindings for
+            // you. The flag still cannot become `true`: routing happens before either kind
+            // of request is distinguishable, so a `true` would also steer a bare
+            // `generate(options: .init(tools:))` — which carries no executors — on-device,
+            // where it throws instead of falling through to a provider that can serve it.
+            supportsToolCalling: false,
             supportsImageInput: false,
             costPerMillionInputTokens: nil,
             costPerMillionOutputTokens: nil,
@@ -148,6 +156,10 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
             // A record of what ran, not a request to run anything: the session already
             // called these tools and read their output, which is why the turn is complete.
             toolCalls: result.toolCalls.map(Self.toolCall(from:)),
+            // Measured, or absent. Apple publishes no usage on its responses, so this is
+            // counted from the transcript when the OS can and left `nil` when it cannot —
+            // never estimated. See ``AppleFMOptions/reportTokenUsage``.
+            usage: result.usage,
             finishReason: .complete
         )
     }
@@ -205,7 +217,9 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
                         from: request, toolNames: Self.toolNames(of: options)
                     )
                     let settings = FMGenerationSettings(request: request, options: options)
-                    let session = try await generableSession(for: built.transcript, options: options)
+                    let session = try await generableSession(
+                        for: await running(built.transcript, options: options), options: options
+                    )
                     guard !session.isResponding else { throw ArbiterError.busy(.appleFoundation) }
 
                     for try await partial in session.stream(
@@ -221,6 +235,44 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
             }
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
+    }
+
+    /// Builds a feedback attachment describing a conversation's cached session.
+    ///
+    /// `LanguageModelSession.logFeedbackAttachment` serialises the session, so this needs
+    /// that exact session — which means the turn must have run under an
+    /// ``AppleFMOptions/conversationID`` and still be cached.
+    ///
+    /// The returned `Data` is a serialised attachment for *you* to file, typically alongside
+    /// a Feedback Assistant report. Arbiter neither sends nor stores it.
+    ///
+    /// - Important: what is cached is a session, not a response. Call this while the turn
+    ///   you are reporting on is still the session's most recent, and be aware that the
+    ///   framework will happily describe a session that has answered nothing (a turn that
+    ///   threw leaves its session cached) and that a later turn changing the tool set, use
+    ///   case, guardrails or adapter replaces the session under the same ID.
+    ///
+    /// - Parameters:
+    ///   - id: the `conversationID` the response was generated under.
+    ///   - sentiment: the reporter's overall rating, or `nil` to report issues only.
+    ///   - issues: specific problems with the response.
+    /// - Throws: `ArbiterError.invalidRequest` when no session is cached for `id` — either
+    ///   the conversation never ran with an ID, or it has aged out of the cache.
+    public func feedback(
+        forConversation id: String,
+        sentiment: AppleFMFeedbackSentiment?,
+        issues: [AppleFMFeedbackIssue] = []
+    ) async throws -> Data {
+        guard let session = await store.cachedSession(for: id) else {
+            throw ArbiterError.invalidRequest(
+                reason: """
+                No Apple Foundation Models session is cached for conversation '\(id)'. Feedback \
+                describes the session that produced the response, so the turn must have run with \
+                AppleFMOptions.conversationID set and must not yet have been evicted.
+                """
+            )
+        }
+        return session.feedbackAttachment(sentiment: sentiment, issues: issues)
     }
 
     public func stream(_ request: AIRequest) -> AsyncThrowingStream<AIStreamChunk, Error> {
@@ -395,6 +447,16 @@ private extension AppleFoundationProvider {
         return FMErrorMapper.arbiterError(for: sessionError.kind, contextLimit: contextLimit)
     }
 
+    /// The history this turn actually runs with.
+    ///
+    /// The builder always produces the request's *full* history, because that is what the
+    /// request describes. If an earlier turn of this conversation already paid for a
+    /// summarising retry, the store swaps its condensed form back in here — otherwise every
+    /// later turn would replay the history that did not fit and overflow again.
+    func running(_ transcript: FMTranscript, options: AppleFMOptions) async -> FMTranscript {
+        await store.adopted(conversationID: options.conversationID, transcript: transcript)
+    }
+
     /// Runs `body`, and on a context overflow optionally summarises the older history and
     /// retries exactly once. A second overflow throws: retrying again would loop.
     func withOverflowRecovery<Result>(
@@ -402,8 +464,9 @@ private extension AppleFoundationProvider {
         options: AppleFMOptions,
         body: @Sendable (FMTranscript, String) async throws -> Result
     ) async throws -> Result {
+        let running = await running(built.transcript, options: options)
         do {
-            return try await body(built.transcript, built.prompt)
+            return try await body(running, built.prompt)
         } catch {
             let translated = mapped(error)
             guard options.contextOverflow == .summarizeAndRetry,
@@ -419,13 +482,31 @@ private extension AppleFoundationProvider {
                 await store.discard(conversationID: conversationID)
             }
 
-            let condensed = try await condense(built.transcript, options: options)
+            let condensed = try await condense(running, options: options)
             do {
-                return try await body(condensed, built.prompt)
+                let result = try await body(condensed, built.prompt)
+                // Adopted only now. A retry that never produced an answer — cancelled, or
+                // blocked by a concurrent turn — is not grounds for rewriting the
+                // conversation's history behind the caller's back.
+                await adopt(original: built.transcript, condensed: condensed, options: options)
+                return result
             } catch {
                 throw mapped(error)
             }
         }
+    }
+
+    /// Makes a condensed transcript the conversation's history from here on.
+    ///
+    /// Keyed on what the *builder* produced this turn, not on what was run: the next turn's
+    /// builder will produce that same history plus the turn just taken, so recognising it as
+    /// a prefix is what lets the summary be reused instead of re-earned. A conversation with
+    /// no ID has nowhere to record this, and pays for the summary again next turn.
+    func adopt(original: FMTranscript, condensed: FMTranscript, options: AppleFMOptions) async {
+        guard let conversationID = options.conversationID else { return }
+        await store.recordCondensation(
+            conversationID: conversationID, original: original, condensed: condensed
+        )
     }
 
     /// Replaces the older part of the transcript with a model-written summary, keeping the
@@ -545,8 +626,11 @@ private extension AppleFoundationProvider {
         // consumer must never be re-delivered by a second attempt.
         var accumulated = ""
         var toolCalls: [FMToolCall] = []
-        var transcript = built.transcript
+        var usage: TokenUsage?
+        var transcript = await running(built.transcript, options: options)
         var didRetry = false
+        /// Held back until the retry actually completes — see `withOverflowRecovery`.
+        var condensedPendingAdoption: FMTranscript?
 
         while true {
             do {
@@ -556,12 +640,14 @@ private extension AppleFoundationProvider {
                 for try await snapshot in session.stream(to: built.prompt, settings: settings) {
                     try Task.checkCancellation()
                     if !snapshot.toolCalls.isEmpty { toolCalls = snapshot.toolCalls }
+                    if let measured = snapshot.usage { usage = measured }
                     let delta = Self.delta(from: accumulated, to: snapshot.content)
                     accumulated = snapshot.content
-                    // A snapshot that only reports tool calls carries no new text; emitting a
-                    // chunk for it would show the consumer an empty delta for nothing. The
-                    // calls ride on the final chunk instead, per `AIStreamChunk.toolCalls`.
-                    guard !delta.isEmpty || snapshot.toolCalls.isEmpty else { continue }
+                    // A snapshot that adds no text carries only metadata — the tool calls
+                    // made this turn, the token counts they cost — and both are knowable
+                    // only once the turn is over, so both ride on the final chunk. Emitting
+                    // one here would show the consumer an empty delta for nothing.
+                    guard !delta.isEmpty else { continue }
                     continuation.yield(AIStreamChunk(
                         delta: delta,
                         accumulatedContent: accumulated,
@@ -583,21 +669,30 @@ private extension AppleFoundationProvider {
 
                 logger.notice("Apple FM context overflow while streaming; summarising and retrying once")
                 didRetry = true
-                // The abandoned attempt's calls belong to a turn that produced nothing; the
-                // retry reports its own.
+                // The abandoned attempt's calls and counts belong to a turn that produced
+                // nothing; the retry reports its own.
                 toolCalls = []
+                usage = nil
                 if let conversationID = options.conversationID {
                     // The cached session holds the transcript that just overflowed.
                     await store.discard(conversationID: conversationID)
                 }
                 transcript = try await condense(transcript, options: options)
+                condensedPendingAdoption = transcript
             }
+        }
+
+        if let condensedPendingAdoption {
+            await adopt(
+                original: built.transcript, condensed: condensedPendingAdoption, options: options
+            )
         }
 
         continuation.yield(AIStreamChunk(
             delta: "",
             accumulatedContent: accumulated,
             isComplete: true,
+            usage: usage,
             finishReason: .complete,
             toolCalls: toolCalls.isEmpty ? nil : toolCalls.map(Self.toolCall(from:)),
             provider: .appleFoundation
@@ -616,12 +711,13 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(
             supportedTasks: [.chat, .summarization, .translation, .structuredOutput],
+            // No model to ask, so the framework's own documented default stands in.
             maxContextTokens: 4_096,
             supportsStreaming: true,
-            // Capabilities describe the provider, not this build of it: availability is what
-            // gates use, and reporting differently here would make routing decisions depend
-            // on which SDK the app was compiled against.
-            supportsToolCalling: true,
+            // Matches the linked build for the same reason it is false there: the router
+            // cannot see the tool bindings that make on-device tool calling work, so
+            // advertising it would route tool requests into a dead end.
+            supportsToolCalling: false,
             supportsImageInput: false,
             costPerMillionInputTokens: nil,
             costPerMillionOutputTokens: nil,
@@ -645,6 +741,19 @@ public struct AppleFoundationProvider: AIProvider, Sendable {
     }
 
     public func generate(_ request: AIRequest) async throws -> AIResponse {
+        throw ArbiterError.providerUnavailable(
+            .appleFoundation,
+            reason: "Apple Foundation Models requires iOS 26+ / macOS 26+ with Apple Intelligence enabled."
+        )
+    }
+
+    /// Present so feedback-reporting code compiles everywhere; there is no session to
+    /// describe without the framework, so it always throws.
+    public func feedback(
+        forConversation id: String,
+        sentiment: AppleFMFeedbackSentiment?,
+        issues: [AppleFMFeedbackIssue] = []
+    ) async throws -> Data {
         throw ArbiterError.providerUnavailable(
             .appleFoundation,
             reason: "Apple Foundation Models requires iOS 26+ / macOS 26+ with Apple Intelligence enabled."

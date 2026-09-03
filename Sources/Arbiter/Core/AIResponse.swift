@@ -30,6 +30,12 @@ public struct AIResponse: Sendable, Equatable {
     public let reasoning: String?
     /// Sources the model cited, when the request enabled citations.
     public let citations: [Citation]
+    /// The model's reasoning as replayable blocks, signatures included.
+    ///
+    /// ``reasoning`` is the same content flattened to readable text. This is what the tool
+    /// loop puts back into the conversation: Anthropic requires a thinking block's opaque
+    /// signature back unchanged once that turn has made tool calls.
+    public let thinking: [ThinkingBlock]
 
     public init(
         id: String,
@@ -41,7 +47,8 @@ public struct AIResponse: Sendable, Equatable {
         usage: TokenUsage? = nil,
         finishReason: FinishReason? = nil,
         reasoning: String? = nil,
-        citations: [Citation] = []
+        citations: [Citation] = [],
+        thinking: [ThinkingBlock] = []
     ) {
         self.id = id
         self.content = content
@@ -53,6 +60,7 @@ public struct AIResponse: Sendable, Equatable {
         self.finishReason = finishReason
         self.reasoning = reasoning
         self.citations = citations
+        self.thinking = thinking
     }
 }
 

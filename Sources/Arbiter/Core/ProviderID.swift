@@ -11,6 +11,11 @@ public enum ProviderID: String, Sendable, Hashable, Codable {
     case ollama
     case mlx
     case appleFoundation
+    // TODO: Apple's Private Cloud Compute tier would be a case here. It is deliberately
+    // absent until there is an implementation behind it: this enum is public and closed,
+    // and a case with no provider would churn every exhaustive switch downstream while
+    // offering callers a tier that cannot serve a request. The API it needs ships with the
+    // OS 27 SDK; the roadmap tracks it as M1.
 
     /// Human-readable name for display purposes
     public var displayName: String {

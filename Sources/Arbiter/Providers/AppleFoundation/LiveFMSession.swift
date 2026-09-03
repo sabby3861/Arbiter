@@ -2,6 +2,9 @@
 // Copyright (c) 2026 Sanjay Kumar. MIT License.
 
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.arbiter", category: "LiveFMSession")
 
 #if canImport(FoundationModels)
 import FoundationModels
@@ -13,13 +16,18 @@ import FoundationModels
 /// stays testable with a double.
 @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 final class LiveFMSession: FMSessionRunning, @unchecked Sendable {
-    // @unchecked: the only stored property is `LanguageModelSession`, which Apple declares
-    // `@unchecked Sendable` itself and which serialises its own generation state. This type
-    // adds no mutable state of its own.
+    // @unchecked: the stored properties are `LanguageModelSession`, which Apple declares
+    // `@unchecked Sendable` itself and which serialises its own generation state, and
+    // `SystemLanguageModel`, which is `Sendable`. This type adds no mutable state of its own.
     private let session: LanguageModelSession
+    /// Kept because `tokenCount(for:)` is declared on the *model*, not the session, and
+    /// token accounting needs the same model this session was built against — a session
+    /// running a custom adapter does not tokenise like the stock one.
+    private let model: SystemLanguageModel
 
     init(transcript: FMTranscript, options: AppleFMOptions) throws {
         let model = try FMBridge.model(for: options)
+        self.model = model
         let tools = try FMBoundTool.tools(for: options)
         session = LanguageModelSession(
             model: model,
@@ -44,11 +52,15 @@ final class LiveFMSession: FMSessionRunning, @unchecked Sendable {
     func respond(to prompt: String, settings: FMGenerationSettings) async throws -> FMRunResult {
         do {
             let options = FMBridge.generationOptions(from: settings)
+            // Everything this turn adds — the prompt entry the framework appends, any tool
+            // round trips, the answer — lives past this mark.
+            let mark = session.transcript.count
             guard let tree = settings.schema else {
                 let response = try await session.respond(to: prompt, options: options)
                 return FMRunResult(
                     text: response.content,
-                    toolCalls: Self.toolCalls(in: response.transcriptEntries)
+                    toolCalls: Self.toolCalls(in: response.transcriptEntries),
+                    usage: await usage(after: mark, settings: settings)
                 )
             }
             // Constrained decoding: the model can only emit content matching the schema the
@@ -64,7 +76,8 @@ final class LiveFMSession: FMSessionRunning, @unchecked Sendable {
             )
             return FMRunResult(
                 text: response.content.jsonString,
-                toolCalls: Self.toolCalls(in: response.transcriptEntries)
+                toolCalls: Self.toolCalls(in: response.transcriptEntries),
+                usage: await usage(after: mark, settings: settings)
             )
         } catch {
             throw Self.translated(error)
@@ -106,12 +119,16 @@ final class LiveFMSession: FMSessionRunning, @unchecked Sendable {
                         }
                     }
 
-                    // Tool calls are only knowable once the turn is over: a snapshot carries
-                    // content, never the calls behind it. Yielded as one final snapshot with
-                    // unchanged content, so it adds a record without adding text.
+                    // Tool calls and token counts are only knowable once the turn is over:
+                    // a snapshot carries content, never the calls behind it or what they
+                    // cost. Yielded as one final snapshot with unchanged content, so it adds
+                    // a record without adding text.
                     let calls = Self.toolCalls(in: session.transcript.dropFirst(mark))
-                    if !calls.isEmpty {
-                        continuation.yield(FMStreamSnapshot(content: latest, toolCalls: calls))
+                    let measured = await usage(after: mark, settings: settings)
+                    if !calls.isEmpty || measured != nil {
+                        continuation.yield(FMStreamSnapshot(
+                            content: latest, toolCalls: calls, usage: measured
+                        ))
                     }
                     continuation.finish()
                 } catch {
@@ -120,6 +137,75 @@ final class LiveFMSession: FMSessionRunning, @unchecked Sendable {
             }
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
+    }
+
+    func feedbackAttachment(
+        sentiment: AppleFMFeedbackSentiment?,
+        issues: [AppleFMFeedbackIssue]
+    ) -> Data {
+        session.logFeedbackAttachment(
+            sentiment: sentiment.map(FMBridge.sentiment(from:)),
+            issues: issues.map(FMBridge.issue(from:))
+        )
+    }
+
+    /// Measures what this turn actually cost, in tokens.
+    ///
+    /// Apple's `Response` carries no usage, so the count is taken after the fact from the
+    /// transcript. The split follows who produced each entry: what the model *generated*
+    /// this turn — its answer and any tool calls it decided to make — is output; everything
+    /// that was *fed* to it — the history it started from, the prompt, and the outputs the
+    /// tools returned — is input.
+    ///
+    /// A response schema is never counted separately, and measurement on macOS 26.5 says
+    /// that is right in both configurations. With `includeSchemaInPrompt` on, the framework
+    /// renders the schema into the prompt entry it appends, so the transcript count already
+    /// carries it — a `"Tokyo."` prompt costs 10 tokens bare and 94 against a 92-token
+    /// schema. With it off, the schema never becomes text at all: it constrains sampling
+    /// rather than being sent, the prompt entry still costs 10, and there is no input to
+    /// attribute. (The entry's own `responseFormat` comes back `nil` either way, so it is
+    /// not a place a count could hide.) Adding `tokenCount(for: schema)` on top would
+    /// overstate the first case and invent the second.
+    ///
+    /// The two counts are taken separately, and each carries a small constant framing
+    /// overhead, so `inputTokens + outputTokens` is a few tokens above what one count over
+    /// the whole turn would report. Near enough for budgeting; not a byte-exact identity.
+    ///
+    /// Never throws: usage is reporting, and losing a completed answer because counting it
+    /// failed would be absurd. A failure yields `nil`, which the router already handles.
+    private func usage(after mark: Int, settings: FMGenerationSettings) async -> TokenUsage? {
+        guard settings.reportTokenUsage else { return nil }
+        guard #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) else {
+            // `tokenCount(for:)` does not exist below 26.4 and there is nothing honest to
+            // put in its place.
+            return nil
+        }
+
+        var fed: [Transcript.Entry] = Array(session.transcript.prefix(mark))
+        var generated: [Transcript.Entry] = []
+        for entry in session.transcript.dropFirst(mark) {
+            switch entry {
+            case .response, .toolCalls: generated.append(entry)
+            default: fed.append(entry)
+            }
+        }
+
+        do {
+            return TokenUsage(
+                inputTokens: try await count(of: fed),
+                outputTokens: try await count(of: generated)
+            )
+        } catch {
+            logger.notice("Apple FM token counting failed; reporting no usage for this turn")
+            return nil
+        }
+    }
+
+    @available(iOS 26.4, macOS 26.4, visionOS 26.4, *)
+    private func count(of entries: [Transcript.Entry]) async throws -> Int {
+        // Short-circuited rather than asked: `tokenCount(for:)` charges 1 token for an
+        // empty collection, which is framing, not content.
+        entries.isEmpty ? 0 : try await model.tokenCount(for: entries)
     }
 
     /// Reads the tool calls out of the entries a turn appended.
