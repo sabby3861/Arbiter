@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — next release is **0.2.0** (minor)
+## [0.2.0] — 2026-09-03
 
 **Migration.** Several public enums changed shape, so this is a minor version bump rather
 than a patch.
