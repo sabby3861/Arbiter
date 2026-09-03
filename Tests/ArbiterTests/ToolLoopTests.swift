@@ -463,7 +463,7 @@ struct ToolLoopTests {
         #expect(fmOptions.conversationID == "chat-1")
     }
 
-    @Test func aProviderReportingNoToolSupportIsPenalisedNotDisqualified() async throws {
+    @Test func aProviderReportingNoToolSupportIsDisqualifiedThenRescuedUnderSmartOnAShortPrompt() async throws {
         // Narrow claim: this passes because of the *one* configuration that rescues a
         // zeroed score, and pins that configuration rather than a general mechanism.
         // `CapabilityMatcher.score` zeroes the whole score — not just the capability
@@ -480,6 +480,12 @@ struct ToolLoopTests {
         // gate conditions and a cold, unmonitored lone Apple FM or MLX provider given
         // tools throws `allProvidersFailed`.
         // `filterByConstraints` has no tool filter, so nothing else removes it.
+        //
+        // What is asserted below is the end-to-end outcome — the run is served instead of
+        // throwing `allProvidersFailed` — which does not on its own distinguish the
+        // mechanism the name states. The zeroing and the `+15` are pinned directly on
+        // `CapabilityMatcher` by `Capability disqualification arithmetic/*`. Asserting them
+        // here would need the router's `recentDecisions`, which `Arbiter` does not expose.
         let recorder = CallRecorder()
         let provider = ScriptedProvider(
             id: .appleFoundation,
