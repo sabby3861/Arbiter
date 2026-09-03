@@ -108,10 +108,25 @@ Last verified: 3 Sep 2026 · branch `fix/audit-v2` · `swift build && swift test
 | Device assessment | Shipped | `Router/DeviceAssessor.swift` — `DeviceAssessorTests/canRunLocalModelsRequires4GBAndNonCritical`, `recommendedLocalTierBasedOnMemory` |
 | Context-window filtering | Shipped | `SmartRouterTests/smartRouteExcludesProviderWhenRequestExceedsContext` |
 | Privacy tag routing (`.private`, `.health`, `.financial`, `.personal`, custom) | Shipped | `Router/PrivacyGuard.swift` — `PrivacyGuardTests/healthTagForcesLocal`, `financialTagForcesLocal`, `customTagInCustomSet`; `IntegrationTests/tagsRouteToLocalProvider`, `tagsWithOnlyCloudFails` |
-| PII detection | Partial | `PrivacyGuard` uses four regexes — email, phone, SSN, credit card: `PrivacyGuardTests/detectsEmailAddress`, `detectsPhoneNumber`, `detectsSSN`, `detectsCreditCard`, `detectsPIIInSystemPrompt`. Names, addresses and health terms are not detected, so `.strict` fails open for them. (F9) |
+| PII detection | Shipped | Layered: patterns (SSN, Luhn-checked cards) + `NSDataDetector` (phone, postal address, email) + `NLTagger` names + optional `PrivacyClassifier` — `Router/PIIDetector.swift`. `PrivacyGuard detection corpus/deterministicLayersAreExact`, `precisionAndRecall` (30 labelled prompts: deterministic layers 1.00/1.00, names 0.69/1.00), `overlappingMatchesResolveToTheSpecificType`, plus `PrivacyGuardTests` (unchanged). Name tagging covers only a few languages (English and French on current macOS); a language it cannot handle is reported as reduced confidence, not as unreadable — `unsupportedLanguageDoesNotFailClosed`. Health terms and other domain vocabularies still need an app-supplied classifier. |
+| Fail-closed privacy (`.strict`) | Shipped | `PrivacyGuard hardening/strictFailsClosedOnIndeterminateClassifier`, `throwingClassifierIsInconclusive`, `undeterminableLanguageFailsClosed`, `failOpenGuardAllowsInconclusiveRequest`; `unscannableContentIsUnknown` (an image or PDF the guard cannot read); `Privacy violation errors/detectedPIIThrowsPrivacyViolation`, `failClosedThrowsWithNoDetectedTypes`, `streamingThrowsPrivacyViolation`, `nonPrivacyFailureKeepsItsOwnError`, `downLocalProviderIsAProviderFailure`, `localOnlyGuardExplainsItself`. Not applied to explicit provider selection or `.fixed` routing — see the note below. |
+| `PrivacyReport` on `RoutingDecision` (categories, never values) | Shipped | `Privacy routing/decisionCarriesPrivacyReport`, `cleanRequestIsReportedAndRouted`, `noPrivateProviderMakesTheDecisionUnavailable`, `noGuardMeansNoReport`; `PrivacyGuard hardening/reportCarriesNoValues` |
+| Lexical (NLTagger) complexity & task analysis | Shipped | `Router/LexicalSignals.swift` — `RequestAnalyser corpus/taskDetectionScores` (37 labelled prompts, accuracy 0.97), `structureRaisesComplexity`, `manyQuestionsRaiseComplexity`, `bumpIsBounded`, `fencedCodeIsSplitOut`, `unterminatedFenceIsStillCode` |
+| On-device task-classifier hook (`TaskClassifier`) | Partial | The protocol and the wiring ship and are tested — `RequestAnalyser corpus/confidentClassifierWins`, `unsureClassifierIsIgnored`, `silentAndFailingClassifiersAreHarmless`, `routerUsesTheClassifier` — but Arbiter ships no Apple Foundation Models `.contentTagging` adapter for it. |
 | Provider failover (a failed provider is replaced by the next candidate) | Shipped | `Arbiter.performGenerate` and `attemptStreamProviders` — `IntegrationTests/fallbackVerifiesFirstProviderWasAttempted`, `fallbackChainTriesMultipleProviders`, `fallbackDisabledStopsAfterFirstFailure`, `maxFallbackProvidersLimitsAttempts`, `streamingFallbackToSecondProvider`; `Execution policy/aPermanentFailureSkipsTheRetryAndFallsOverImmediately`, `fallbackStopsAtTheConfiguredNumberOfProviders`. A stream that has already yielded chunks is never failed over, since that would corrupt the consumer's output. |
 | `FallbackChain` component | Partial | `Runtime/FallbackChain.swift` — `FallbackChainTests/"Falls back to secondary on primary failure"`, `"Does not fallback on permanent errors"`, `"Respects maxFallbacks limit"`. The type is fully tested but nothing in `Sources/Arbiter` references it: it is a standalone component you drive yourself, not the runtime's failover, which is the row above. |
 | Provider health monitoring | Partial | `Router/ProviderHealthMonitor.swift`, wired via `Configuration.healthCheck` and consumed by `SmartRouter`. No test covers it. |
+
+**Where the privacy guard does not reach.** The guard filters candidates during
+`.smart` and `.priority` routing only. Two paths bypass it, both pre-existing:
+`RequestOptions(provider:)` returns a decision before the router runs, and `.fixed`
+routing sends the request to the named provider whatever the assessment says (the
+report is still attached to the decision). A caller who names a cloud provider
+explicitly overrides the guard. In `generate`, request middleware also runs
+*after* routing (it runs before routing on the streaming path), so text a
+middleware injects is not assessed — pre-existing, but privacy-relevant now. Also note `SmartRouter.recentDecisions` stores the
+first 80 characters of each prompt for the debug view — the `PrivacyReport` carries no
+values, but that history does.
 
 ## Runtime & security
 

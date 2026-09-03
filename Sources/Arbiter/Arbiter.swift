@@ -67,7 +67,8 @@ public final class Arbiter: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(
             privacyGuard: config.privacyGuard,
-            healthMonitor: config.healthMonitor
+            healthMonitor: config.healthMonitor,
+            taskClassifier: config.taskClassifier
         )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
@@ -84,7 +85,8 @@ public final class Arbiter: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(
             privacyGuard: config.privacyGuard,
-            healthMonitor: config.healthMonitor
+            healthMonitor: config.healthMonitor,
+            taskClassifier: config.taskClassifier
         )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
@@ -246,7 +248,7 @@ extension Arbiter {
         let decision = await routeRequest(request, options: options)
 
         guard decision.isAvailable else {
-            throw ArbiterError.allProvidersFailed(attempts: [])
+            throw unroutableError(for: decision)
         }
 
         let providerOrder = buildProviderOrder(from: decision)
@@ -431,6 +433,37 @@ extension Arbiter {
         return try structuredOutputHandler.decode(response.content, as: type)
     }
 
+    /// Why nothing could be routed to.
+    ///
+    /// A privacy constraint that left nowhere to run is reported as
+    /// ``ArbiterError/privacyViolation(detectedTypes:reason:)`` rather than as a generic
+    /// failure: the request was not attempted *deliberately*, and a fail-closed guard's
+    /// whole purpose is that the caller can tell that apart from a network problem.
+    ///
+    /// The guard having narrowed the field is not enough on its own. If a private provider
+    /// is registered and simply failed — offline, over its context window — then providers
+    /// are what failed, and saying "register an on-device provider" to someone who has one
+    /// would send them looking in the wrong place.
+    func unroutableError(for decision: RoutingDecision) -> ArbiterError {
+        guard let report = decision.privacyReport, report.forcesOnDevice else {
+            return .allProvidersFailed(attempts: [])
+        }
+        let hasPrivateProvider = providers.contains { $0.capabilities.privacyLevel != .thirdPartyCloud }
+        guard !hasPrivateProvider else { return .allProvidersFailed(attempts: []) }
+
+        let reason: String
+        if !report.matchedTags.isEmpty {
+            reason = "request tagged \(report.matchedTags.map(\.rawValue).sorted().joined(separator: ", "))"
+        } else if !report.detectedTypes.isEmpty {
+            reason = "sensitive data detected"
+        } else if report.failedClosed {
+            reason = "detection was inconclusive and the guard fails closed"
+        } else {
+            reason = "the guard restricts this request to on-device providers"
+        }
+        return .privacyViolation(detectedTypes: report.sortedTypes, reason: reason)
+    }
+
     /// The guards and recovery mechanisms this request runs under.
     func executionPolicy(options: RequestOptions?) -> ExecutionPolicy {
         ExecutionPolicy(
@@ -589,7 +622,7 @@ extension Arbiter {
         let decision = await routeRequest(request, options: options)
 
         guard decision.isAvailable else {
-            throw ArbiterError.allProvidersFailed(attempts: [])
+            throw unroutableError(for: decision)
         }
 
         let lastError = await attemptStreamProviders(
@@ -722,6 +755,7 @@ public struct Configuration: Sendable {
     var retryConfig: RetryConfiguration?
     var healthMonitor: ProviderHealthMonitor?
     var validationPolicy: ResponseValidationPolicy = .disabled
+    var taskClassifier: (any TaskClassifier)?
 
     var resolvedResponseValidator: ResponseValidator? {
         switch validationPolicy {
@@ -764,6 +798,13 @@ public struct Configuration: Sendable {
     /// Set privacy enforcement level
     public mutating func privacy(_ guard: PrivacyGuard) {
         privacyGuard = `guard`
+    }
+
+    /// Supply an on-device classifier the router consults before its own task heuristics.
+    ///
+    /// See ``TaskClassifier``. A classifier that is unsure leaves the heuristics in charge.
+    public mutating func taskClassification(_ classifier: any TaskClassifier) {
+        taskClassifier = classifier
     }
 
     /// Add a middleware to the processing pipeline
