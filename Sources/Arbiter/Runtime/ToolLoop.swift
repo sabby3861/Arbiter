@@ -40,7 +40,7 @@ public struct ToolInvocation: Sendable, Equatable {
     }
 }
 
-/// The outcome of ``Arbiter/run(_:tools:maxToolRounds:options:)``.
+/// The outcome of ``Arbiter/run(_:tools:maxToolRounds:options:)-([Message],_,_,_)``.
 public struct RunResult: Sendable {
     /// The model's last response — the answer, unless the run stopped at the round limit.
     public let response: AIResponse
@@ -81,7 +81,7 @@ public struct RunResult: Sendable {
     }
 }
 
-/// What ``Arbiter/runStream(_:tools:maxToolRounds:options:)`` reports as the run proceeds.
+/// What ``Arbiter/runStream(_:tools:maxToolRounds:options:)-([Message],_,_,_)`` reports as the run proceeds.
 public enum RunEvent: Sendable {
     /// A fragment of the model's text, as it arrives.
     case textDelta(String)

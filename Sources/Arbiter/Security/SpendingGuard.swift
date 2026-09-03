@@ -50,7 +50,7 @@ public actor SpendingGuard {
     ///
     /// That `nil` is a *refusal*, not permission: nothing was reserved and nothing will
     /// be billed, so a caller that goes on to spend money on the strength of it spends
-    /// it untracked. Callers inside the package use ``attemptReservation(estimatedCost:)``
+    /// it untracked. Callers inside the package use `attemptReservation(estimatedCost:)`
     /// instead, which hands back the refusal's reason so it cannot be mistaken for a
     /// provider that costs nothing.
     public func reserveBudget(estimatedCost: Double) throws -> Reservation? {

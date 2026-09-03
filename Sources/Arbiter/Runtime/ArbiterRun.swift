@@ -53,7 +53,7 @@ public extension Arbiter {
         try await run([.user(prompt)], tools: tools, maxToolRounds: maxToolRounds, options: options)
     }
 
-    /// The streaming form of ``run(_:tools:maxToolRounds:options:)``.
+    /// The streaming form of ``run(_:tools:maxToolRounds:options:)-([Message],_,_,_)``.
     ///
     /// Yields the model's text as it arrives, plus an event for each tool call started,
     /// each approval requested and each result produced, and finishes with
@@ -62,7 +62,7 @@ public extension Arbiter {
     ///
     /// - Note: providers stream an answer's text but not the opaque signature of a
     ///   thinking block, so a streamed run cannot replay extended thinking across rounds
-    ///   the way ``run(_:tools:maxToolRounds:options:)`` does. Use the non-streaming form
+    ///   the way ``run(_:tools:maxToolRounds:options:)-([Message],_,_,_)`` does. Use the non-streaming form
     ///   when thinking is enabled together with tools.
     func runStream(
         _ messages: [Message],
@@ -87,7 +87,7 @@ public extension Arbiter {
         }
     }
 
-    /// The streaming form of ``run(_:tools:maxToolRounds:options:)``, from a single prompt.
+    /// The streaming form of ``run(_:tools:maxToolRounds:options:)-(String,_,_,_)``, from a single prompt.
     func runStream(
         _ prompt: String,
         tools: [any ArbiterTool],
