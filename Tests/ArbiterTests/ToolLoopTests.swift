@@ -483,9 +483,10 @@ struct ToolLoopTests {
         //
         // What is asserted below is the end-to-end outcome — the run is served instead of
         // throwing `allProvidersFailed` — which does not on its own distinguish the
-        // mechanism the name states. The zeroing and the `+15` are pinned directly on
-        // `CapabilityMatcher` by `Capability disqualification arithmetic/*`. Asserting them
-        // here would need the router's `recentDecisions`, which `Arbiter` does not expose.
+        // mechanism the name states. Two other tests carry that:
+        // `Capability disqualification arithmetic/*` pins the zeroing and the `+15` on
+        // `CapabilityMatcher` and on the router's own decision, and the test below flips
+        // the one gate this configuration still depends on and shows the same run fail.
         let recorder = CallRecorder()
         let provider = ScriptedProvider(
             id: .appleFoundation,
@@ -500,6 +501,19 @@ struct ToolLoopTests {
         let ai = Arbiter {
             $0.system(provider)
             $0.routing(.smart)
+            // Two of the four gate conditions in the comment above are read from the
+            // machine, not from this test: the complexity boost is switched off entirely
+            // under thermal pressure, and ten recorded requests for Apple FM in the
+            // shared performance suite move its score by as much as +15 or -20 — either
+            // one flips this run without anything in the test changing. Pinned to a
+            // nominal device and an empty tracker, so a failure here means the routing
+            // changed and not that the machine did.
+            $0.routerEnvironment(
+                device: {
+                    DeviceCapabilities(memoryGB: 16, thermalLevel: .nominal, processorCount: 8)
+                },
+                performanceTracker: .inMemory()
+            )
         }
 
         let result = try await ai.run(
@@ -507,6 +521,60 @@ struct ToolLoopTests {
         )
 
         #expect(result.content == "Answered anyway")
+    }
+
+    /// The counter-assertion the test above could not carry while it read the live
+    /// device — a hot machine would have failed it for the same reason a real regression
+    /// would. With the device pinned it becomes an assertion: hold the provider, the
+    /// prompt, the tools and the strategy fixed, move only the thermal state, and the
+    /// run that was served now fails. So the run above is not served because the
+    /// provider was never disqualified; it is served because the `.smart`-and-cool gate
+    /// on `applyComplexityAdjustments` was open.
+    ///
+    /// Constrained thermal state closes that gate — it also closes `applyTaskAdjustments`
+    /// and halves local scores, neither of which is load-bearing here: the task boost
+    /// keys on a `.structuredOutput` task this provider does not declare, and halving a
+    /// score of 0 leaves 0.
+    @Test func theSameRunFailsOnceThermalPressureRemovesTheRescue() async throws {
+        let recorder = CallRecorder()
+        let provider = ScriptedProvider(
+            id: .appleFoundation,
+            script: [.answerTurn("Answered anyway", provider: .appleFoundation)],
+            capabilities: ProviderCapabilities(
+                supportedTasks: [.chat], maxContextTokens: 8_000,
+                supportsStreaming: true, supportsToolCalling: false, supportsImageInput: false,
+                costPerMillionInputTokens: nil, costPerMillionOutputTokens: nil,
+                estimatedLatency: .fast, privacyLevel: .onDevice
+            )
+        )
+        let ai = Arbiter {
+            $0.system(provider)
+            $0.routing(.smart)
+            $0.routerEnvironment(
+                device: {
+                    DeviceCapabilities(memoryGB: 16, thermalLevel: .serious, processorCount: 8)
+                },
+                performanceTracker: .inMemory()
+            )
+        }
+
+        var thrown: (any Error)?
+        do {
+            _ = try await ai.run([.user("Go")], tools: [Self.tool("weather", recorder: recorder)])
+        } catch {
+            thrown = error
+        }
+
+        // A zeroed score makes the decision `.unavailable`, which the runtime reports as
+        // every provider having failed. `unroutableError` hardcodes an empty attempts
+        // list, so that field proves nothing on its own — the recorder is what shows the
+        // run stopped at routing and never reached the tool.
+        let failure = try #require(thrown as? ArbiterError)
+        guard case .allProvidersFailed = failure else {
+            Issue.record("Expected allProvidersFailed, got \(failure)")
+            return
+        }
+        #expect(recorder.calls.isEmpty)
     }
 }
 

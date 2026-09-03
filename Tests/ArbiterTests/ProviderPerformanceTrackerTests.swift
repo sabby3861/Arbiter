@@ -123,4 +123,34 @@ struct ProviderPerformanceTrackerTests {
         #expect(summary.successRate == 1.0)
         #expect(summary.averageLatencySeconds == 1.0)
     }
+
+    /// The router tests build their trackers with `.inMemory()` so a routing assertion
+    /// cannot be decided by records an earlier run left behind. What that needs from the
+    /// tracker is that it still *scores* — an inert tracker would make those tests pass
+    /// for the wrong reason — and that its records reach no other instance.
+    ///
+    /// Deliberately not asserted here: that nothing lands in the shared
+    /// `com.arbiter.performance` suite. Reading that suite is a race — the tests that
+    /// build a production `Arbiter` write to it while this runs — so the assertion would
+    /// be flaky in the direction of a false pass. `persist()`'s `guard let defaults`
+    /// is what carries that property, and both nil-defaults entry points are internal.
+    @Test("An in-memory tracker scores normally and does not outlive its instance")
+    func inMemoryTrackerRecordsButDoesNotPersist() async {
+        let tracker = ProviderPerformanceTracker.inMemory()
+        for _ in 0..<15 {
+            await tracker.recordOutcome(
+                provider: .anthropic, task: .conversation,
+                latencySeconds: 0.5, succeeded: true, tokenCount: 100
+            )
+        }
+
+        // Identical to the persisted tracker's behaviour: the records are real and the
+        // minimum sample size is met, so an adjustment is produced.
+        #expect(await tracker.summary(for: .anthropic).requestCount == 15)
+        #expect(await tracker.scoreAdjustment(for: .anthropic, task: .conversation) > 0)
+
+        let fresh = ProviderPerformanceTracker.inMemory()
+        #expect(await fresh.summary(for: .anthropic).requestCount == 0)
+        #expect(await fresh.scoreAdjustment(for: .anthropic, task: .conversation) == 0)
+    }
 }

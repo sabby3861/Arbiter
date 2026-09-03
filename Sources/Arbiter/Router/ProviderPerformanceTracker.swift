@@ -13,7 +13,7 @@ private let logger = Logger(subsystem: "com.arbiter", category: "PerformanceTrac
 /// well for the current device and network conditions.
 public actor ProviderPerformanceTracker {
     private var records: [RecordKey: PerformanceRecord] = [:]
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
     private let minimumSampleSize = 10
 
     public init() {
@@ -22,9 +22,17 @@ public actor ProviderPerformanceTracker {
         self.records = Self.loadRecords(from: store)
     }
 
-    init(defaults: UserDefaults) {
+    /// `nil` keeps the records in this instance for its lifetime: nothing is read at
+    /// init and nothing is written back. Tests use it so a routing assertion cannot be
+    /// decided by records an earlier run left in the shared performance suite.
+    init(defaults: UserDefaults?) {
         self.defaults = defaults
-        self.records = Self.loadRecords(from: defaults)
+        self.records = defaults.map(Self.loadRecords(from:)) ?? [:]
+    }
+
+    /// A tracker backed by nothing, for tests that need routing to start cold.
+    static func inMemory() -> ProviderPerformanceTracker {
+        ProviderPerformanceTracker(defaults: nil)
     }
 
     func recordOutcome(
@@ -128,6 +136,7 @@ private extension ProviderPerformanceTracker {
     }
 
     func persist() {
+        guard let defaults else { return }
         var encoded: [[String: Any]] = []
         for (key, record) in records {
             encoded.append([

@@ -295,7 +295,8 @@ struct PrivacyRoutingTests {
         SmartRouter(
             privacyGuard: privacy,
             connectivityCheck: Self.online,
-            deviceAssessment: Self.normalDevice
+            deviceAssessment: Self.normalDevice,
+            performanceTracker: .inMemory()
         )
     }
 

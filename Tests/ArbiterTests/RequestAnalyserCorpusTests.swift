@@ -307,7 +307,8 @@ struct RequestAnalyserCorpusTests {
             deviceAssessment: { DeviceCapabilities(memoryGB: 16, thermalLevel: .nominal, processorCount: 8) },
             taskClassifier: StubTaskClassifier(
                 behaviour: .verdict(TaskClassification(task: .translation, confidence: 0.95))
-            )
+            ),
+            performanceTracker: .inMemory()
         )
         let decision = await router.route(
             AIRequest.chat("Write a function that reverses a linked list"),

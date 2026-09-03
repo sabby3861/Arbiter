@@ -169,6 +169,47 @@ struct CapabilityDisqualificationTests {
         #expect(withoutTools.adjustedScore > 10)
     }
 
+    /// The two tests above are arithmetic on `CapabilityMatcher` alone; the `+15` in the
+    /// second is written out by hand. This one asks the router for it, so the claim that
+    /// `applyComplexityAdjustments` is what supplies the rescue is checked rather than
+    /// annotated — and checks it on the published decision, which is what the run acts on.
+    ///
+    /// Hermetic by construction: the device is a fixed nominal snapshot, because thermal
+    /// pressure switches the complexity boost off altogether, and the tracker is empty,
+    /// because ten recorded requests for either provider are enough to move a score by
+    /// as much as +15 or -20 — far more than the few points that separate these two.
+    @Test func theRouterItselfSuppliesTheRescueAndRanksItFirst() async {
+        let router = SmartRouter(
+            connectivityCheck: { .wifi },
+            deviceAssessment: {
+                DeviceCapabilities(memoryGB: 16, thermalLevel: .nominal, processorCount: 8)
+            },
+            performanceTracker: .inMemory()
+        )
+        let decision = await router.route(
+            toolRequest,
+            policy: .smart,
+            providers: [
+                MockProvider(id: .anthropic, capabilities: cloud),
+                MockProvider(id: .appleFoundation, capabilities: onDevice),
+            ],
+            budgetRemaining: nil
+        )
+
+        // "Go" is trivial/simple, so the boost goes to the `.onDevice`/`.system` tiers —
+        // Apple FM is `.system`.
+        let rescued = decision.candidateScores.first { $0.provider == .appleFoundation }
+        let capable = decision.candidateScores.first { $0.provider == .anthropic }
+        #expect(rescued?.reasoning.contains("lacks required tool calling") == true)
+        #expect(rescued?.reasoning.contains { $0.contains("boosted on-device") } == true)
+        #expect(rescued?.score == 15)
+        #expect((capable?.score ?? 0) > 0)
+
+        // The disqualified provider ranks first; the capable one is only the fallback.
+        #expect(decision.selectedProvider == .appleFoundation)
+        #expect(decision.alternativeProviders == [.anthropic])
+    }
+
     /// The rescue is larger than the gap it has to close, so a *disqualified*
     /// provider can outrank a capable one. The capable provider stays in the
     /// decision's alternatives, so the fallback chain is what recovers the run —
