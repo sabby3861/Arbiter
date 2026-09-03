@@ -19,7 +19,7 @@ private let logger = Logger(subsystem: "com.arbiter", category: "PrivacyGuard")
 /// Detection is layered — patterns for SSNs and card numbers, `NSDataDetector` for phone
 /// numbers, postal addresses and email addresses, and `NLTagger` name tagging for person,
 /// organisation and place names — and an application can add its own
-/// ``PrivacyClassifier``. See ``PIIDetector`` for what each layer covers.
+/// ``PrivacyClassifier``. See `PIIDetector` for what each layer covers.
 ///
 /// ``strict`` additionally *fails closed*: when a layer cannot run, so that the absence of
 /// a match proves nothing, the request is kept off third-party cloud providers anyway. If

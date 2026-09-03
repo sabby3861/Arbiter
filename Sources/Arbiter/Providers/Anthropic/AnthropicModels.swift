@@ -21,7 +21,7 @@ import Foundation
 /// The enum is a convenience, not a gate: `AIRequest.model` is a free-form
 /// string, so a model Anthropic ships that is not listed here — a Mythos model
 /// under limited availability, say — can still be named directly, and
-/// ``named(_:)`` simply returns `nil` for it. Per-model rules apply only to IDs
+/// `named(_:)` simply returns `nil` for it. Per-model rules apply only to IDs
 /// this catalogue recognises.
 ///
 /// Current-generation IDs carry no date suffix — they are pinned snapshots in

@@ -23,10 +23,16 @@ public extension Arbiter {
     /// ``ToolOutput/requiresApproval(payload:)`` suspends the run until
     /// ``approve(_:)`` or ``deny(_:reason:)`` answers it.
     ///
+    /// - Parameter messages: the conversation to send. The loop appends the tool-call and
+    ///   tool-result turns it runs to a copy, returned as ``RunResult/messages``.
+    /// - Parameter tools: the tools the model may call this run. Each is offered to the
+    ///   model by its ``ArbiterTool/definition`` and executed by the loop when called.
     /// - Parameter maxToolRounds: how many rounds of tool execution to allow. Reaching it
     ///   ends the run with ``RunResult/stoppedAtRoundLimit`` set rather than looping on. The
     ///   conversation then ends on an unanswered tool-call turn — see
     ///   ``RunResult/messages``.
+    /// - Parameter options: per-request overrides — model, token cap, temperature and the
+    ///   rest. `nil` uses the defaults the ``Arbiter`` instance was built with.
     ///
     /// - Note: Apple Foundation Models runs tools inside its own session, so a run routed
     ///   there executes the same tools through the same approval, timeout and

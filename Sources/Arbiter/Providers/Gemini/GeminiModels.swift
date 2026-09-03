@@ -91,7 +91,7 @@ public enum GeminiModel: String, Sendable, CaseIterable {
     /// Price per million output tokens, in USD, on the paid Standard tier.
     ///
     /// Google bills thinking tokens as output, which is why
-    /// ``GeminiMapper`` folds `thoughtsTokenCount` into `TokenUsage.outputTokens`.
+    /// `GeminiMapper` folds `thoughtsTokenCount` into `TokenUsage.outputTokens`.
     /// See ``costPerMillionInput`` for the tiering and promotional caveats.
     public var costPerMillionOutput: Double {
         switch self {
@@ -122,7 +122,7 @@ public enum GeminiModel: String, Sendable, CaseIterable {
     ///
     /// Gemini 3 takes a `thinkingLevel`; the 2.5 series takes a numeric
     /// `thinkingBudget`. Sending the wrong one is an API error, so
-    /// ``GeminiMapper`` rejects the mismatch locally.
+    /// `GeminiMapper` rejects the mismatch locally.
     /// Verified 2 September 2026 against
     /// https://ai.google.dev/gemini-api/docs/generate-content/thinking.
     public var thinkingSupport: GeminiThinkingSupport {
