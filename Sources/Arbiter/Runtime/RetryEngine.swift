@@ -60,7 +60,8 @@ struct RetryEngine: Sendable {
             case .authenticationFailed, .invalidRequest, .modelNotFound, .contentFiltered,
                  .budgetExceeded, .dailyLimitExceeded, .deviceNotCapable, .decodingFailed,
                  .keychainError, .providerUnavailable, .allProvidersFailed,
-                 .contextWindowExceeded, .refused, .unsupportedLanguage:
+                 .contextWindowExceeded, .refused, .unsupportedLanguage,
+                 .privacyViolation:
                 return false
             }
         }

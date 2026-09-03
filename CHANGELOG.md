@@ -2,11 +2,12 @@
 
 ## [Unreleased] — next release is **0.2.0** (minor)
 
-`ArbiterError` gained four cases — `contextWindowExceeded(_:limit:)`, `refused(_:explanation:)`,
-`unsupportedLanguage(_:locale:)` and `busy(_:)`. Adding a case to a public enum is
-source-breaking for any downstream `switch` over `ArbiterError` that has no `default:`, so
-this is a minor version bump rather than a patch. Adding a `default:` (or the four new
-cases) is the whole migration; no existing case changed shape.
+`ArbiterError` gained five cases — `contextWindowExceeded(_:limit:)`, `refused(_:explanation:)`,
+`unsupportedLanguage(_:locale:)`, `busy(_:)` and `privacyViolation(detectedTypes:reason:)`.
+Adding a case to a public enum is source-breaking for any downstream `switch` over
+`ArbiterError` that has no `default:`, so this is a minor version bump rather than a patch.
+Adding a `default:` (or the five new cases) is the whole migration; no existing case changed
+shape.
 
 ### Added
 
@@ -88,6 +89,38 @@ cases) is the whole migration; no existing case changed shape.
   exposes neither, and `ProviderID.applePrivateCloud` is deliberately not added until there
   is a provider behind it.
 
+- **Layered detection of sensitive data.** `PrivacyGuard`'s four regexes are replaced by
+  `PIIDetector`: patterns for US Social Security numbers and payment cards (a Luhn check
+  keeps a 16-digit order number from reading as a card), `NSDataDetector` for phone
+  numbers, postal addresses and email addresses, and `NLTagger` name tagging for person,
+  organisation and place names. A detector match overlapping a pattern match is dropped, so
+  an SSN is reported as an SSN rather than as the phone number `NSDataDetector` reads it
+  as. Detection now covers text `MessageContent.text` never surfaced — `.mixed` parts,
+  tool-call arguments, tool results and replayed thinking blocks — and an image or PDF is
+  recorded as content the guard could not read rather than passed over silently. An
+  application can add its own `PrivacyClassifier` for categories Arbiter does not ship
+  with; it receives the request's text, so it must run on device.
+
+  Measured on the labelled corpus in `PrivacyDetectionCorpusTests` (macOS 15): the pattern
+  and `NSDataDetector` layers score 1.00 precision and 1.00 recall over 30 prompts; name
+  tagging scores 0.69 and 1.00, with the tests enforcing floors of 0.60 and 0.90. Name
+  tagging covers few languages (English and French on current macOS), so a prompt in a
+  language it cannot handle is reported as reduced confidence rather than as unreadable —
+  the deterministic layers are language-independent and still run.
+
+- **`RoutingDecision.privacyReport`.** Every decision made under a `PrivacyGuard` carries a
+  `PrivacyReport`: the categories detected, the request tags that matched, a
+  `PrivacyDetectionConfidence`, and whether routing was constrained. Categories only — the
+  report never carries a matched value, so it is safe to log or show in a debug view.
+  `PrivacyGuard.assess(_:)` (async, consults the classifier) and `inspect(_:)` (synchronous,
+  built-in layers only) return the same report directly.
+
+- **On-device task-classifier hook.** `TaskClassifier` lets an on-device classifier — Apple
+  Foundation Models' `.contentTagging` is the intended one — name a request's task before
+  `RequestAnalyser`'s heuristics do, registered with `Configuration.taskClassification(_:)`.
+  A verdict below 0.6 confidence, a `nil`, or a thrown error leaves the heuristics in
+  charge, and a response schema outranks both. Arbiter ships the hook, not an adapter.
+
 - **Request Intelligence Engine**: `RequestAnalyser` classifies prompt complexity (trivial → expert), detects task type (classification, code generation, reasoning, etc.), and estimates output tokens before routing
 - **Adaptive routing**: `ProviderPerformanceTracker` records real-world latency and success rates per provider per task type, adjusting routing scores after 10+ requests — the router gets smarter with usage
 - **Pre-request cost estimation**: `Arbiter.estimateCost()` returns per-provider cost estimates without sending a request
@@ -137,6 +170,38 @@ cases) is the whole migration; no existing case changed shape.
   attempt gets its own deadline. The response-quality retry runs through the same execution
   path as the first attempt, so it is subject to the timeout, budget reservation and cost
   tracking it previously bypassed.
+
+- **`PrivacyGuard.strict` now fails closed.** When nothing could read a request — an image
+  or a PDF the guard cannot see inside, text with no determinable language, a
+  `PrivacyClassifier` that could not answer — the assessment reports
+  `PrivacyDetectionConfidence.unknown` and the request is kept off third-party cloud
+  providers rather than let through. An app that registers only cloud providers therefore
+  gets `ArbiterError.privacyViolation(detectedTypes:reason:)` thrown on requests `.strict`
+  used to send, most visibly any request carrying an image or a document. Register an
+  on-device or local provider, or construct the guard with `failClosed: false` to keep the
+  previous behaviour. Fail-closed deliberately does *not* fire for a language the name
+  tagger does not cover, or `.strict` would block every Spanish or Japanese prompt.
+
+  The guard filters candidates during `.smart` and `.priority` routing. Naming a provider
+  with `RequestOptions(provider:)` or `.fixed` routing still goes where it is told — the
+  report is attached to the decision, but the caller's choice stands.
+
+- **`PrivacyGuard.detectNames` defaults to `true`.** Any existing
+  `PrivacyGuard(detectPII: true)` — including `.strict` — now treats person, organisation
+  and place names as sensitive, so prompts that merely mention someone by name route
+  on-device where they previously reached the cloud. Pass `detectNames: false` for the
+  deterministic layers alone.
+
+- **Complexity and task detection read the prompt's structure, not just its keywords.**
+  `RequestAnalyser` measures sentences, verbs, clause markers, questions and fenced code
+  with `NLTagger`, and raises a request one complexity tier — never more, never past
+  `.complex` — when its shape is harder than its length and task label suggest: four or
+  more sentences, three or more questions, a dense multi-clause instruction, or a pasted
+  snippet of 20+ lines. A tier shift moves routing between the on-device and cloud
+  boosts, so borderline requests may be routed differently than in 0.1. An unrecognised
+  imperative ("turn these notes into a checklist") is now `shortGeneration` rather than
+  `conversation`. Structural signals are measured on the conversation only — a system
+  prompt is the app's own boilerplate and would otherwise bump every request under it.
 
 - `RoutingPolicy.maxRetries` is renamed `maxFallbackProviders` — it never retried anything.
   The old name and initialiser label still work, deprecated.

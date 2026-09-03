@@ -306,13 +306,37 @@ let response = try await ai.generate("Analyze my blood pressure trends", options
 // Or define your own: RequestTag("legal")
 ```
 
-The `PrivacyGuard` can also detect PII automatically:
+The `PrivacyGuard` can also detect sensitive data automatically:
 
 ```swift
 let ai = Arbiter {
-    $0.privacy(.strict)  // Enables PII detection (email, phone, SSN, credit card)
+    $0.privacy(.strict)  // Layered detection + fail-closed routing
 }
-// Requests containing PII are automatically routed on-device
+// Requests containing sensitive data are automatically routed on-device
+```
+
+Detection runs in layers: patterns for US Social Security and payment-card
+numbers (Luhn-checked), `NSDataDetector` for phone numbers, postal addresses
+and email addresses, and `NLTagger` name tagging for person, organisation and
+place names. An app can add its own `PrivacyClassifier` for categories Arbiter
+does not know about.
+
+Name tagging covers fewer languages than the other layers (English and French
+on current macOS), so a prompt in a language it cannot handle is reported as
+reduced confidence, not as unreadable — the deterministic layers are
+language-independent and still run.
+
+`.strict` fails closed: when nothing could read the request at all — no
+determinable language, an image or PDF the guard cannot see inside, a classifier
+that could not answer — it stays off third-party clouds anyway, and throws
+`ArbiterError.privacyViolation` if no on-device or local provider is
+registered. Every decision carries a `PrivacyReport` listing the
+*categories* detected, never the values:
+
+```swift
+let decision = await router.route(request, policy: .smart, providers: providers, budgetRemaining: nil)
+decision.privacyReport?.sortedTypes   // [emailAddress, personName]
+decision.privacyReport?.confidence    // .high / .heuristic / .unknown
 ```
 
 ### Fallback Chain
@@ -651,9 +675,16 @@ to ensure they never leave the device. The smart router enforces this.
 are reached, Arbiter falls back to free on-device providers automatically.
 
 **PII detection**: Optional prompt scanning catches email addresses, phone
-numbers, US Social Security numbers and credit-card numbers before they reach
-cloud APIs. Detection is pattern-based — names, addresses and health terms are
-not detected yet, so treat it as a safety net, not a guarantee.
+numbers, postal addresses, US Social Security numbers, payment-card numbers and
+person/organisation/place names before they reach cloud APIs. The pattern and
+`NSDataDetector` layers score 1.00 precision and recall on the labelled corpus
+in `PrivacyDetectionCorpusTests`; name tagging is statistical — 0.69 precision
+and 1.00 recall measured there on macOS 15, with the tests enforcing floors of
+0.60 and 0.90 — and every one of its misses on that corpus is a false positive,
+which keeps a request on-device rather than letting one out. It can also miss a
+real name, and health terms and other domain vocabularies need your own
+`PrivacyClassifier`, so treat detection as a strong safety net, not a
+guarantee.
 
 **Redacted logging**: API keys and sensitive headers are automatically
 redacted in all log output.
@@ -716,7 +747,7 @@ one and for the known gaps.
 - [x] Spending guards with budget enforcement
 - [x] Keychain-based secure key storage
 - [x] Smart Router with multi-factor scoring
-- [x] Privacy Guard with PII detection (email, phone, SSN, credit card)
+- [x] Privacy Guard with layered PII detection *(patterns, NSDataDetector, NLTagger names, pluggable classifier, fail-closed `.strict`, category-only `PrivacyReport`)*
 - [x] Cost tracking per provider
 - [x] Fallback chain with automatic retry
 - [x] Environment-aware routing (connectivity, thermal, budget)

@@ -10,23 +10,67 @@ import Foundation
 /// genuinely smart — not just capability matching but understanding
 /// WHAT the request needs before deciding WHERE to send it.
 public struct RequestAnalyser: Sendable {
+    /// A ``TaskClassifier`` verdict below this confidence is discarded and the built-in
+    /// heuristics decide instead.
+    public static let classifierConfidenceThreshold = 0.6
 
     public init() {}
 
-    /// Analyse a request and return routing hints
+    /// Analyse a request and return routing hints.
     public func analyse(
         _ request: AIRequest,
         providers: [any AIProvider] = []
     ) -> RequestAnalysis {
+        analyse(request, providers: providers, classifierVerdict: nil)
+    }
+
+    /// Analyse a request, consulting an on-device ``TaskClassifier`` first.
+    ///
+    /// The classifier decides the task only when it reports at least
+    /// ``classifierConfidenceThreshold`` confidence; a lower verdict, a `nil`, or a thrown
+    /// error all leave the built-in heuristics in charge. Structured output still wins
+    /// over both — a request with a response schema *is* a structured-output request
+    /// whatever its wording.
+    public func analyse(
+        _ request: AIRequest,
+        providers: [any AIProvider] = [],
+        classifier: (any TaskClassifier)?
+    ) async -> RequestAnalysis {
+        var verdict: TaskClassification?
+        if let classifier {
+            do {
+                verdict = try await classifier.classify(extractPromptText(from: request))
+            } catch {
+                verdict = nil
+            }
+        }
+        return analyse(request, providers: providers, classifierVerdict: verdict)
+    }
+
+    func analyse(
+        _ request: AIRequest,
+        providers: [any AIProvider],
+        classifierVerdict: TaskClassification?
+    ) -> RequestAnalysis {
         let promptText = extractPromptText(from: request)
+        // Structure is measured on the conversation alone. A system prompt is the app's
+        // own boilerplate, identical on every request: counting its sentences would bump
+        // every request under a four-sentence system prompt a complexity tier, and its
+        // opening word would stand in for the user's.
+        let signals = LexicalSignals.analyse(conversationText(from: request))
         let estimatedInputTokens = TokenEstimator.estimateTokens(for: request.messages)
 
         let hasStructuredOutput = request.responseFormat != nil && request.responseFormat != .text
-        let detectedTask = detectTask(from: promptText, hasStructuredOutput: hasStructuredOutput)
+        let detectedTask = detectTask(
+            from: promptText,
+            signals: signals,
+            hasStructuredOutput: hasStructuredOutput,
+            classifierVerdict: classifierVerdict
+        )
         let complexity = classifyComplexity(
             inputTokens: estimatedInputTokens,
             task: detectedTask,
-            promptText: promptText
+            signals: signals
         )
 
         let estimatedOutputTokens = estimateOutputTokens(
@@ -57,18 +101,33 @@ public struct RequestAnalyser: Sendable {
 
 private extension RequestAnalyser {
     func extractPromptText(from request: AIRequest) -> String {
-        let messageText = request.messages
-            .compactMap { $0.content.text }
-            .joined(separator: " ")
+        let messageText = conversationText(from: request)
         if let system = request.systemPrompt {
             return system + " " + messageText
         }
         return messageText
     }
 
-    func detectTask(from text: String, hasStructuredOutput: Bool) -> DetectedTask {
+    /// The conversation's own text, without the system prompt.
+    func conversationText(from request: AIRequest) -> String {
+        request.messages
+            .compactMap { $0.content.text }
+            .joined(separator: " ")
+    }
+
+    func detectTask(
+        from text: String,
+        signals: LexicalSignals,
+        hasStructuredOutput: Bool,
+        classifierVerdict: TaskClassification?
+    ) -> DetectedTask {
         if hasStructuredOutput {
             return .structuredOutput
+        }
+
+        if let classifierVerdict,
+           classifierVerdict.confidence >= RequestAnalyser.classifierConfidenceThreshold {
+            return classifierVerdict.task
         }
 
         let lowered = text.lowercased()
@@ -81,6 +140,17 @@ private extension RequestAnalyser {
         if matchesReasoning(lowered) { return .reasoning }
         if matchesLongGeneration(lowered) { return .longGeneration }
         if matchesShortGeneration(lowered) { return .shortGeneration }
+
+        // No keyword matched. An imperative — a sentence opening on a verb, with a noun
+        // for it to act on — is an instruction to produce something, not conversation.
+        // "Hello, how are you?" opens on an interjection and stays conversation.
+        if signals.taggingAvailable,
+           signals.startsWithVerb,
+           signals.nounCount > 0,
+           signals.questionCount == 0,
+           signals.wordCount <= 25 {
+            return .shortGeneration
+        }
 
         return .conversation
     }
@@ -153,7 +223,7 @@ private extension RequestAnalyser {
     func classifyComplexity(
         inputTokens: Int,
         task: DetectedTask,
-        promptText: String
+        signals: LexicalSignals
     ) -> ComplexityTier {
         let tokenComplexity: ComplexityTier
         switch inputTokens {
@@ -173,8 +243,9 @@ private extension RequestAnalyser {
         case .reasoning: taskComplexity = .complex
         }
 
-        // Use the higher of the two signals
-        return max(tokenComplexity, taskComplexity)
+        // Use the higher of the two signals, then let structure raise it one tier.
+        let base = max(tokenComplexity, taskComplexity)
+        return structuralBump(base, signals: signals)
     }
 
     func estimateOutputTokens(task: DetectedTask, inputTokens: Int) -> Int {
@@ -257,4 +328,26 @@ public enum DetectedTask: String, Sendable, Equatable, Codable, Hashable {
     case reasoning
     case conversation
     case structuredOutput
+}
+
+extension RequestAnalyser {
+    /// Raise the tier by one when the prompt's *shape* is harder than its length and its
+    /// task label suggest: several sentences to satisfy at once, several questions, a
+    /// pile of verbs, or a large pasted snippet. One tier, never more — these are hints,
+    /// not a second classification, and a short single-sentence prompt is never bumped.
+    func structuralBump(_ base: ComplexityTier, signals: LexicalSignals) -> ComplexityTier {
+        guard base < .complex else { return base }
+
+        let multiPart = signals.sentenceCount >= 4
+        let manyQuestions = signals.questionCount >= 3
+        let denseInstruction = signals.taggingAvailable
+            && signals.verbCount >= 12
+            && signals.clauseMarkerCount >= 8
+        let largeSnippet = signals.fencedCodeLineCount >= 20
+
+        guard multiPart || manyQuestions || denseInstruction || largeSnippet else {
+            return base
+        }
+        return ComplexityTier(rawValue: base.rawValue + 1) ?? base
+    }
 }

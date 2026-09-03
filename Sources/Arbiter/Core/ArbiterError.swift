@@ -33,6 +33,11 @@ public enum ArbiterError: Error, Sendable {
     case unsupportedLanguage(ProviderID, locale: String?)
     /// The provider is already generating and cannot accept another call yet. Retryable.
     case busy(ProviderID)
+    /// The request could not be routed without breaking its privacy constraint: every
+    /// remaining provider would have sent it to a third-party cloud. `detectedTypes` names
+    /// the categories of sensitive data found — never the values. Not retryable; the fix
+    /// is to register an on-device or local provider, or to relax the guard.
+    case privacyViolation(detectedTypes: [PIIType], reason: String)
 }
 
 extension ArbiterError: LocalizedError {
@@ -84,6 +89,12 @@ extension ArbiterError: LocalizedError {
             } else {
                 "\(provider.displayName) does not support the request's language"
             }
+        case .privacyViolation(let detectedTypes, let reason):
+            if detectedTypes.isEmpty {
+                "Request blocked by the privacy guard: \(reason)"
+            } else {
+                "Request blocked by the privacy guard (\(reason)): \(detectedTypes.map(\.rawValue).joined(separator: ", "))"
+            }
         case .busy(let provider):
             "\(provider.displayName) is already generating a response"
         }
@@ -133,6 +144,8 @@ extension ArbiterError: LocalizedError {
             "Rephrase the request, or route to a different provider."
         case .unsupportedLanguage:
             "Use a supported language, or route to a cloud provider."
+        case .privacyViolation:
+            "Register an on-device or local provider for sensitive requests, or relax the privacy guard."
         case .busy:
             "Wait for the in-flight response to finish, or use a separate conversation."
         }
