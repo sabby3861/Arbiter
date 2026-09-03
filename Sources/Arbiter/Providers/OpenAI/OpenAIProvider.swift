@@ -28,7 +28,8 @@ public struct OpenAIProvider: AIProvider, Sendable {
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(
             supportedTasks: [.chat, .completion, .codeGeneration, .summarization,
-                             .translation, .structuredOutput, .imageUnderstanding],
+                             .translation, .structuredOutput, .imageUnderstanding,
+                             .embedding],
             maxContextTokens: defaultModel.contextWindow,
             supportsStreaming: defaultModel.supportsStreaming,
             supportsToolCalling: true,
@@ -66,7 +67,7 @@ public struct OpenAIProvider: AIProvider, Sendable {
         self.init(resolvedKey: apiKey, baseURL: baseURL, organization: organization, defaultModel: defaultModel)
     }
 
-    private init(resolvedKey: String, baseURL: URL?, organization: String?, defaultModel: OpenAIModel) {
+    init(resolvedKey: String, baseURL: URL?, organization: String? = nil, defaultModel: OpenAIModel = .gpt4o) {
         self.apiKey = resolvedKey
         self.baseURL = baseURL ?? Self.defaultBaseURL
         self.organization = organization

@@ -113,8 +113,25 @@ public struct TokenUsage: Sendable, Equatable {
     public let cacheReadInputTokens: Int?
 
     /// What a five-minute cache write costs relative to a base input token.
+    ///
+    /// Anthropic's five-minute rate. A one-hour write costs 2x, which this
+    /// single constant cannot express.
     public static let cacheWriteRateMultiplier = 1.25
     /// What a cache read costs relative to a base input token.
+    ///
+    /// Anthropic's standard rate. It is **not** right for every model: Claude
+    /// Fable 5.1 and Claude Mythos 5.1 bill cache reads at 0.025x, so a cost
+    /// estimate for `claude-fable-5-1` overstates cache-read spend roughly
+    /// fourfold. It is not right for OpenAI at all, whose discount is
+    /// per-model — which is why OpenAI cache reads are deliberately left inside
+    /// `inputTokens` rather than priced through this constant. Overstating is
+    /// the safe direction for a budget guard, so the flat rate stands until
+    /// per-model cache rates land with the roadmap's unified prompt-caching
+    /// work; the verified OpenAI rates already sit in
+    /// `OpenAIModel.costPerMillionCachedInput` waiting for it.
+    ///
+    /// Verified 3 September 2026 against
+    /// https://platform.claude.com/docs/en/about-claude/pricing
     public static let cacheReadRateMultiplier = 0.1
 
     public var totalTokens: Int { inputTokens + outputTokens }

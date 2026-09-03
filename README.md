@@ -117,11 +117,13 @@ let analysis: SentimentResult = try await session.send(
 
 **How it works today:** `generate(_:as:)` takes one of two paths, chosen per
 provider. Where the provider can constrain decoding to a schema — OpenAI strict
-mode, Apple Foundation Models' `GenerationSchema` — Arbiter derives a JSON Schema
-from your `Codable` type and sends that, so the model cannot return a shape that
-does not fit. Everywhere else it asks for JSON in the prompt (setting the
-provider's JSON mode where one exists), describing the shape with your `example`
-value when you pass one. Both paths strip markdown fences and decode with
+mode, Anthropic's `output_config.format`, Gemini's
+`generationConfig.responseFormat.text`, Ollama's `format` object and Apple
+Foundation Models' `GenerationSchema`, which is all of them but MLX — Arbiter
+derives a JSON Schema from your `Codable` type and sends that, so the model cannot
+return a shape that does not fit. Everywhere else it asks for JSON in the prompt
+(setting the provider's JSON mode where one exists), describing the shape with your
+`example` value when you pass one. Both paths strip markdown fences and decode with
 `JSONDecoder`; a malformed reply surfaces as `ArbiterError.decodingFailed` with the
 raw content attached, and a model that declines as `ArbiterError.refused`.
 
@@ -339,6 +341,21 @@ decision.privacyReport?.sortedTypes   // [emailAddress, personName]
 decision.privacyReport?.confidence    // .high / .heuristic / .unknown
 ```
 
+**Two paths bypass the guard, by design.** It filters candidates during `.smart`
+and `.priority` routing only.
+
+- `RequestOptions(provider:)` returns a decision before the router runs. The guard
+  does not merely lose its veto — it never runs at all, so `decision.privacyReport`
+  is `nil` on an explicitly-routed request. Do not rely on it for audit logging
+  there.
+- `.fixed` routing sends the request to the named provider whatever the assessment
+  says. Here the guard *does* run and the report is attached to the decision; only
+  the routing choice is overridden.
+
+If you name a cloud provider explicitly, nothing stops you. Request middleware also
+runs *after* routing on the `generate` path, so text a middleware injects is not
+assessed.
+
 ### Fallback Chain
 
 When the top-scored provider fails, the router automatically tries alternatives:
@@ -426,18 +443,50 @@ let ai = Arbiter {
 >
 > Apple Foundation Models is the odd one out: it reports `false` too, but only
 > because the router cannot see the executors you supply. `run(_:tools:)` supplies
-> them for you, so a run that lands there works. Reporting `false` is a penalty
-> rather than a veto — the router zeroes that provider's capability score for a
-> request carrying tools, so it loses to any provider that reports `true` but can
-> still be chosen when it is the best candidate left. Route explicitly with
-> `RequestOptions(provider: .appleFoundation)` when you mean to be certain. Calling
-> `generate` directly also means binding each `ToolDefinition` to a closure in
-> `AppleFMOptions.tools` yourself:
+> them for you, so a run that lands there works.
+>
+> **`false` disqualifies, it does not merely penalise.** A request carrying tools
+> zeroes the *whole* score of any provider reporting `supportsToolCalling == false`,
+> not one term of a weighted sum, and a best score of zero routes `.unavailable` —
+> which surfaces as `ArbiterError.allProvidersFailed`. Four later score *additions*
+> can rescue it. Two need `.smart` routing on a device that is not thermally
+> constrained: `+15` to an `.onDevice`/`.system` provider for a prompt the analyser
+> calls trivial or simple, and `+10` to a provider declaring `AITask.structuredOutput`
+> on a structured-output task. Two are ungated and apply under every strategy: up to
+> `+15` from recorded performance once a provider has ten or more requests behind it
+> for that task, and `+5` for a provider a configured health monitor has found
+> healthy. So if Apple FM or MLX is the *only* registered provider, a tool request
+> throws under `.privacyFirst`, `.qualityFirst`, `.costOptimized` or
+> `.latencyOptimized`, under thermal pressure, or on a complex non-structured prompt
+> — **while the runtime is cold and no health monitor is configured.** Add a health
+> monitor, or let it accumulate ten requests, and it is served under any strategy.
+> The same path applies to a request carrying an image and a provider reporting
+> `supportsImageInput == false`, and `.priority` routing skips capability matching
+> altogether.
+>
+> A mixed setup is not immune either, though it recovers. `+15` is larger than the
+> gap it closes — scores normalise into roughly the 5–20 range — so under `.smart`
+> on a short prompt a rescued on-device provider can rank *ahead* of a fully capable
+> cloud one and be tried first. The capable provider is next in the fallback chain,
+> so the run still succeeds; what it costs is a wasted attempt, and a hard failure
+> if you have turned fallback off.
+>
+> Route explicitly with `RequestOptions(provider: .appleFoundation)` when you mean
+> to be certain — that bypasses capability matching entirely. (Making this a real
+> penalty rather than a disqualification is a roadmap item; it changes routing
+> behaviour and is not in 0.2.) Calling `generate` directly also means binding each
+> `ToolDefinition` to a closure in `AppleFMOptions.tools` yourself:
 >
 > ```swift
+> // `weather` is an AppleFMToolBinding: a ToolDefinition plus the closure that
+> // runs it, because Apple executes tools inside `respond()`.
+> let weather = AppleFMToolBinding(definition: weatherTool) { arguments in
+>     lookupWeather(city: arguments["city"]?.stringValue ?? "")
+> }
+>
 > let reply = try await ai.generate(prompt, options: .init(
->     provider: .appleFoundation,          // required — routing would skip it
->     tools: [weather.definition],
+>     tools: [weatherTool],
+>     provider: .appleFoundation,          // routing would otherwise skip it
 >     providerOptions: [.appleFoundation: AppleFMOptions(tools: [weather])]
 > ))
 > ```
@@ -456,9 +505,59 @@ let ai = Arbiter {
 > Vision cells as implemented but unverified — see
 > [Feature Status](Documentation/FEATURE_STATUS.md).
 >
+> **On streaming:** Anthropic, Gemini, Ollama, MLX and Apple Foundation Models
+> report `supportsStreaming` unconditionally. OpenAI reports its *default model's*
+> `supportsStreaming` — every model in the catalogue streams today, so the flag is
+> always `true`, but it is model-dependent by construction and a future model that
+> does not stream would flip it. OpenAI's opt-in Responses transport does not
+> stream on any model.
+>
+> **On default models:** a provider built without a model argument — `model:` on
+> the factories, `defaultModel:` on the initialisers — uses
+> `.claudeSonnet5` (Anthropic), `.gpt4o` (OpenAI), `.flash25` (Gemini) and
+> `llama3.2` (Ollama). The OpenAI and Gemini defaults predate their refreshed
+> catalogues, and the default is what `capabilities.maxContextTokens` and the cost
+> estimate the router scores on are taken from — so pass `model:` if you want a
+> current model's window and price:
+>
+> ```swift
+> try $0.cloud(.openAI(from: .keychain, model: .gpt56Terra))
+> ```
+>
 > **✅ Ready** means the provider is implemented and wired into routing, not that
 > every capability in its row is test-covered; Feature Status has the per-feature
 > evidence.
+
+## Provider Options
+
+Each cloud provider exposes its own controls through
+`RequestOptions.providerOptions`, keyed by `ProviderID`. Everything below is
+optional — a request that names none of it behaves exactly as before.
+
+```swift
+let reply = try await ai.generate(prompt, options: .init(
+    providerOptions: [
+        .anthropic: AnthropicOptions(
+            thinking: .adaptive,   // or .extended(budgetTokens:) where the model takes one
+            promptCaching: AnthropicPromptCaching(breakpoints: 2)
+        )
+    ]
+))
+```
+
+| Type | Carries |
+|------|---------|
+| `AnthropicOptions` | `thinking` (validated per model), `thinkingDisplay`, `promptCaching` — at most four breakpoints. Document input with citations rides on `MessageContent.document` |
+| `OpenAIOptions` | `reasoningEffort` for the o-series and GPT‑5 family (validated against each model's published set), `api = .responses` to opt into the Responses transport, `structuredOutputName` |
+| `GeminiOptions` | `thinking` (`thinkingLevel` on Gemini 3, `thinkingBudget` on 2.5), `includeThoughts`, `googleSearch` grounding, `safetySettings`, `cachedContent` |
+| `OllamaOptions` | `keepAlive`, `think`, `numCtx` |
+| `AppleFMOptions` | `sampling`, `useCase`, `guardrails`, LoRA `adapter`, `prewarm`, on-device tool bindings, `conversationID`, `contextOverflow`, `locale`/`enforceLocale`, `reportTokenUsage` |
+
+A model's reasoning comes back in `AIResponse.reasoning` (and as `.thinking`
+content when it carries a replayable signature), grounding and document citations
+in `AIResponse.citations`, and cache token counts in `TokenUsage`. See
+[Feature Status](Documentation/FEATURE_STATUS.md) for what each one is tested
+against.
 
 ## On-Device Providers
 
@@ -679,7 +778,7 @@ numbers, postal addresses, US Social Security numbers, payment-card numbers and
 person/organisation/place names before they reach cloud APIs. The pattern and
 `NSDataDetector` layers score 1.00 precision and recall on the labelled corpus
 in `PrivacyDetectionCorpusTests`; name tagging is statistical — 0.69 precision
-and 1.00 recall measured there on macOS 15, with the tests enforcing floors of
+and 1.00 recall measured there on macOS 26.5, with the tests enforcing floors of
 0.60 and 0.90 — and every one of its misses on that corpus is a false positive,
 which keeps a request on-device rather than letting one out. It can also miss a
 real name, and health terms and other domain vocabularies need your own
