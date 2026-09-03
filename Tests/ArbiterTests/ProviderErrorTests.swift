@@ -162,15 +162,15 @@ struct ProviderErrorTests {
 
     @Test func ollamaStreamEmptyLine() {
         let mapper = OllamaMapper(defaultModel: "llama3.2")
-        var accumulated = ""
-        let chunk = mapper.parseStreamLine("", accumulated: &accumulated)
+        var state = OllamaStreamState()
+        let chunk = mapper.parseStreamLine("", state: &state)
         #expect(chunk == nil)
     }
 
     @Test func ollamaStreamInvalidJSON() {
         let mapper = OllamaMapper(defaultModel: "llama3.2")
-        var accumulated = ""
-        let chunk = mapper.parseStreamLine("not json", accumulated: &accumulated)
+        var state = OllamaStreamState()
+        let chunk = mapper.parseStreamLine("not json", state: &state)
         #expect(chunk == nil)
     }
 }

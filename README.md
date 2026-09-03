@@ -131,8 +131,8 @@ and nested structs — but not for a type containing an **enum**, a dictionary o
 self-reference; those fall back to the prompt path automatically, and passing an
 `example` is then the most reliable option. And because fallback can move a request
 to a provider that cannot be constrained, the form is chosen for whoever actually
-serves the request, not once up front. Ollama takes the prompt path until its
-mapper sends a schema object. On Apple FM you can also hand a Swift
+serves the request, not once up front. MLX takes the prompt path: it runs an
+unconstrained local model and has no schema to send. On Apple FM you can also hand a Swift
 `@Generable` type straight to the provider's own `generate(_:as:)`.
 
 ## Tool Execution
@@ -382,21 +382,23 @@ let ai = Arbiter {
 
 | Provider | Status | Privacy | Capabilities |
 |----------|--------|---------|--------------|
-| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision |
-| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision |
-| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision |
-| Ollama | ✅ Ready | Local Server | Chat, Code, Vision |
+| Anthropic Claude | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| OpenAI GPT | ✅ Ready | Cloud | Chat, Code, Vision, Tools, Embeddings |
+| Google Gemini | ✅ Ready | Cloud | Chat, Code, Vision, Tools |
+| Ollama | ✅ Ready | Local Server | Chat, Code, Vision, Tools, Embeddings |
 | MLX | ✅ Ready | On-Device | Chat, Code, Summarization |
 | Apple Foundation Models | ✅ Ready | On-Device | Chat, Summarization, Structured Output |
 
-> **On tools:** Anthropic, OpenAI and Gemini accept tool definitions
+> **On tools:** Anthropic, OpenAI, Gemini and Ollama accept tool definitions
 > (`RequestOptions(tools:)`) and Arbiter parses the tool calls back out of
-> non-streaming responses into `response.toolCalls`. On all three a full
+> non-streaming responses into `response.toolCalls`. On all four a full
 > multi-round conversation replays correctly and streamed calls surface with parsed
 > arguments; OpenAI's opt-in Responses transport does not stream at all. `run(_:tools:)` runs
 > the execution loop on top of that — see [Tool Execution](#tool-execution) — so
-> you only run the tools yourself if you call `generate`/`chat` directly. Ollama and
-> MLX report `supportsToolCalling == false`.
+> you only run the tools yourself if you call `generate`/`chat` directly. Ollama
+> behaves the same way, with one wrinkle of its own: its API attaches no id to a
+> tool call, so Arbiter synthesises one per turn and its `role: "tool"` replies
+> correlate by tool name. MLX reports `supportsToolCalling == false`.
 >
 > Apple Foundation Models is the odd one out: it reports `false` too, but only
 > because the router cannot see the executors you supply. `run(_:tools:)` supplies
@@ -725,7 +727,7 @@ one and for the known gaps.
 - [x] Usage analytics with cross-session persistence
 - [x] Lifecycle management for on-device providers *(no dedicated test yet)*
 - [x] Security documentation and proxy architecture guide
-- [x] Structured output (typed Codable responses; schema-constrained on OpenAI and Apple Foundation Models, prompt-based JSON elsewhere)
+- [x] Structured output (typed Codable responses; schema-constrained on OpenAI, Anthropic, Gemini, Ollama and Apple Foundation Models, prompt-based JSON on MLX)
 - [x] Schema derivation from `Codable` types *(enums, dictionaries and recursive types use the prompt path)*
 - [x] Request intelligence engine (complexity, task detection, cost estimation)
 - [x] Adaptive routing (learns from usage patterns)

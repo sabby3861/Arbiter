@@ -30,6 +30,11 @@ public protocol EmbeddingProvider: Sendable {
 
 public extension EmbeddingProvider {
     /// Embed a single string with the provider's default model.
+    ///
+    /// - Throws: `ArbiterError.invalidRequest` on a provider that has no default
+    ///   embedding model to fall back on. `OllamaProvider` is one: an Ollama
+    ///   server offers no default and a chat model cannot embed, so there name
+    ///   the model with ``embed(_:model:dimensions:)``.
     func embed(_ text: String) async throws -> [Float] {
         let response = try await embed([text], model: nil, dimensions: nil)
         guard let first = response.embeddings.first else {

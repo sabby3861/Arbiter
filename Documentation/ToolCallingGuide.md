@@ -1,6 +1,6 @@
 # Tool Calling Guide
 
-Arbiter supports tool calling (function calling) across cloud providers, letting the AI invoke your Swift functions.
+Arbiter supports tool calling (function calling) across the cloud providers and Ollama, letting the AI invoke your Swift functions.
 
 There are two ways to use it. `run(_:tools:)` runs the whole exchange for you — it
 sends the conversation, executes the tools the model calls, feeds the results back
@@ -122,7 +122,7 @@ print(response.content) // Final answer comparing both cities
 | Anthropic | Yes | Definitions, parallel calls, streamed call arguments and multi-round history, with `run(_:tools:)` executing the loop. |
 | OpenAI | Yes | Definitions, parallel calls, streamed call arguments and multi-round history on Chat Completions, with `run(_:tools:)` executing the loop; the opt-in Responses transport maps calls and results but does not stream. |
 | Gemini | Yes | Definitions, parallel calls, streamed `functionCall` parts and multi-round history, with `run(_:tools:)` executing the loop. Gemini has no tool-call finish reason of its own — a turn asking for a function finishes `STOP` — so Arbiter reports one that carries calls as `.toolCall`. Replayed turns keep each call's `id` and its `thoughtSignature`, which the API requires back unchanged. |
-| Ollama | No | Not supported by Ollama API |
+| Ollama | Yes | Definitions, parallel calls, `tool_calls` on both the non-streaming and NDJSON streaming paths and multi-round history, with `run(_:tools:)` executing the loop. Ollama has no tool-call finish reason of its own — a turn asking for a tool finishes `done_reason: "stop"` — so Arbiter reports one that carries calls as `.toolCall`. Ollama attaches no id to a call, so Arbiter synthesises one per turn (`ollama-call-<turn>-<index>`); replayed results correlate by `tool_name` rather than by id, so give each `ToolResult` a `name`. |
 | MLX | No | On-device models lack tool support |
 | Apple FM | Yes, differently | The model calls tools *inside* `respond()`, so this guide's pattern does not apply: bind each definition to an executor in `AppleFMOptions.tools` and select the provider with `RequestOptions(provider: .appleFoundation)`. The turn always finishes `.complete`, never `.toolCall`, and `response.toolCalls` records what already ran. `capabilities.supportsToolCalling` reports `false` so the router scores tool requests away from a provider whose bindings it cannot see; `run(_:tools:)` binds them for you, so a run that does land here works and finishes in one round. |
 
