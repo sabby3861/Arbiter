@@ -174,10 +174,13 @@ requests behind it, serves the tool request under every strategy.
 | Apple FM or MLX registered **alone**, with a health monitor configured, or ten or more recorded requests for the task | Served on-device under **any** strategy — the ungated `+5`/`+15` rescues the score. |
 | Apple FM or MLX registered **alone**, cold, no health monitor, and any of `.privacyFirst` / `.qualityFirst` / `.costOptimized` / `.latencyOptimized`, or thermal pressure, or a complex non-structured prompt | Throws `ArbiterError.allProvidersFailed`. |
 
-`Tool loop/aProviderReportingNoToolSupportIsPenalisedNotDisqualified` covers one row of
-that table — a lone on-device provider under `.smart` on a short prompt — and its name
-predates this correction. The score arithmetic behind the first row is pinned separately
-by `Capability disqualification arithmetic/*`.
+`Tool loop/aProviderReportingNoToolSupportIsDisqualifiedThenRescuedUnderSmartOnAShortPrompt`
+covers one row of that table — a lone on-device provider under `.smart` on a short
+prompt — and its name states the strategy and prompt gate rather than a general
+mechanism, though the row's "registered alone" and "no thermal pressure" conditions are
+carried by the doc comment rather than the name. The score
+arithmetic behind the first row is pinned separately by
+`Capability disqualification arithmetic/*`.
 `SmartRouter.filterByConstraints` has no tool filter, so nothing else removes the
 provider. The same path fires for `supportsImageInput == false` on any request
 carrying an image.

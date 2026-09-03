@@ -107,9 +107,10 @@ than a patch.
   only while it is cold and unmonitored. `SmartRouter.filterByConstraints` has no tool
   filter, so nothing else is at work, and `.priority` routing skips `CapabilityMatcher`
   entirely, so none of this applies there.
-  `Tool loop/aProviderReportingNoToolSupportIsPenalisedNotDisqualified` pins the one
-  configuration that is rescued, not the general case. The identical path fires for
-  `supportsImageInput == false` on any request carrying an image.
+  `Tool loop/aProviderReportingNoToolSupportIsDisqualifiedThenRescuedUnderSmartOnAShortPrompt`
+  pins the one configuration that is rescued, not the general case; the score arithmetic
+  itself is pinned by `Capability disqualification arithmetic/*`. The identical path fires
+  for `supportsImageInput == false` on any request carrying an image.
 
   Turning this into a genuine penalty — a heavy score reduction rather than a
   disqualification, so a capable-enough provider stays in the running — is a roadmap item.
