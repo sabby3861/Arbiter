@@ -16,6 +16,9 @@ struct ThreeTierRoutingTests {
         DeviceCapabilities(memoryGB: 16, thermalLevel: .serious, processorCount: 8)
     }
 
+    /// `.inMemory()` for the reason `SmartRouterTests.makeRouter` records: the
+    /// production tracker reads a shared `UserDefaults` suite, and enough accumulated
+    /// records there move a provider's score by as much as +15 or -20.
     func makeRouter(
         connectivity: (@Sendable () async -> ConnectivityState)? = nil,
         device: (@Sendable () -> DeviceCapabilities)? = nil,
@@ -24,7 +27,8 @@ struct ThreeTierRoutingTests {
         SmartRouter(
             privacyGuard: privacy,
             connectivityCheck: connectivity ?? Self.onlineState,
-            deviceAssessment: device ?? Self.normalDevice
+            deviceAssessment: device ?? Self.normalDevice,
+            performanceTracker: .inMemory()
         )
     }
 

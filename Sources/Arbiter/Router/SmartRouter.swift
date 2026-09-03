@@ -18,7 +18,7 @@ public actor SmartRouter {
     private let maxHistorySize = 100
     private let analyser = RequestAnalyser()
     private let taskClassifier: (any TaskClassifier)?
-    let performanceTracker = ProviderPerformanceTracker()
+    let performanceTracker: ProviderPerformanceTracker
     private let healthMonitor: ProviderHealthMonitor?
 
     public init(
@@ -26,13 +26,16 @@ public actor SmartRouter {
         connectivityCheck: (@Sendable () async -> ConnectivityState)? = nil,
         deviceAssessment: (@Sendable () -> DeviceCapabilities)? = nil,
         healthMonitor: ProviderHealthMonitor? = nil,
-        taskClassifier: (any TaskClassifier)? = nil
+        taskClassifier: (any TaskClassifier)? = nil,
+        performanceTracker: ProviderPerformanceTracker? = nil
     ) {
         self.privacyGuard = privacyGuard
         self.taskClassifier = taskClassifier
         self.connectivityCheck = connectivityCheck ?? ConnectivityMonitor.checkConnectivity
         self.deviceAssessment = deviceAssessment ?? DeviceAssessor.assess
         self.healthMonitor = healthMonitor
+        // Defaults to the store-backed tracker, so routing keeps learning across launches.
+        self.performanceTracker = performanceTracker ?? ProviderPerformanceTracker()
     }
 
     /// Route a request to the best available provider.
@@ -198,7 +201,9 @@ private extension SmartRouter {
             }
         }
 
-        applyEnvironmentAdjustments(&scores, device: device, budgetRemaining: budgetRemaining, factors: &factors)
+        let excluded = applyEnvironmentAdjustments(
+            &scores, device: device, budgetRemaining: budgetRemaining, factors: &factors
+        )
 
         if case .smart = policy.strategy, !device.isThermallyConstrained {
             applyComplexityAdjustments(&scores, analysis: analysis)
@@ -206,6 +211,7 @@ private extension SmartRouter {
         }
         await applyPerformanceAdjustments(&scores, analysis: analysis)
         await applyHealthAdjustments(&scores)
+        enforceExclusions(&scores, excluded: excluded)
         scores.sort { $0.adjustedScore > $1.adjustedScore }
 
         return buildDecision(
@@ -342,12 +348,20 @@ private extension SmartRouter {
         }
     }
 
+    /// Applies device and budget state to the scores, and reports which providers the
+    /// environment has *excluded* rather than merely penalised — see `enforceExclusions`.
+    ///
+    /// Thermal pressure is a penalty: a hot device can still serve a local model, just
+    /// worse than a cloud one. An exhausted budget is not a penalty — the request cannot
+    /// be paid for at all — so those providers are reported as excluded.
     func applyEnvironmentAdjustments(
         _ scores: inout [ProviderScore],
         device: DeviceCapabilities,
         budgetRemaining: Double?,
         factors: inout [RoutingFactor]
-    ) {
+    ) -> Set<ProviderID> {
+        var excluded: Set<ProviderID> = []
+
         if device.isThermallyConstrained {
             for i in scores.indices {
                 let tier = scores[i].providerID.tier
@@ -364,8 +378,39 @@ private extension SmartRouter {
         if let budget = budgetRemaining, budget < 0.01 {
             for i in scores.indices where scores[i].providerID.tier == .cloud {
                 scores[i].adjustedScore = 0
+                scores[i].reasoning.append("budget exhausted — cloud excluded")
+                excluded.insert(scores[i].providerID)
             }
             factors.append(.budget(remaining: budget, estimatedCost: 0))
+        }
+
+        return excluded
+    }
+
+    /// Re-applies the environment's exclusions after every additive pass has run.
+    ///
+    /// Without this the zeroing in `applyEnvironmentAdjustments` is only a starting
+    /// value that the passes below it can spend back: `applyComplexityAdjustments` adds
+    /// +15 to exactly the cloud tier an exhausted budget just zeroed whenever the prompt
+    /// reads as complex, which is more than either provider's base score in a typical
+    /// two-provider setup and so puts it back at the top of the decision.
+    ///
+    /// What that cost depends on the limit action. Under `.block` — the default —
+    /// `SpendingGuard` refuses the call, so the damage is a published decision naming a
+    /// provider the runtime will not use. Under `.fallbackToCheaper` it does not refuse
+    /// at all: `reserveBudget` returns `nil` and the request goes out, unreserved and
+    /// unbilled. Either way the router's own "budget exhausted removes cloud" rule was
+    /// false in the decision it published, which is where callers read it.
+    ///
+    /// Scope: only the budget exclusion is enrolled. The context-window zeroing above is
+    /// rescuable by the same passes and is the same bug class, but it is a separate
+    /// change with its own behaviour consequences and is not made here. The zeroing
+    /// `CapabilityMatcher` applies for a missing capability stays rescuable *by design*
+    /// — that rescue is documented and pinned by tests.
+    func enforceExclusions(_ scores: inout [ProviderScore], excluded: Set<ProviderID>) {
+        guard !excluded.isEmpty else { return }
+        for i in scores.indices where excluded.contains(scores[i].providerID) {
+            scores[i].adjustedScore = 0
         }
     }
 

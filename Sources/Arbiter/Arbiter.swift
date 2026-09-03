@@ -67,8 +67,10 @@ public final class Arbiter: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(
             privacyGuard: config.privacyGuard,
+            deviceAssessment: config.deviceAssessment,
             healthMonitor: config.healthMonitor,
-            taskClassifier: config.taskClassifier
+            taskClassifier: config.taskClassifier,
+            performanceTracker: config.performanceTracker
         )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
@@ -85,8 +87,10 @@ public final class Arbiter: Sendable {
         self.spendingGuard = config.spendingGuard
         self.router = SmartRouter(
             privacyGuard: config.privacyGuard,
+            deviceAssessment: config.deviceAssessment,
             healthMonitor: config.healthMonitor,
-            taskClassifier: config.taskClassifier
+            taskClassifier: config.taskClassifier,
+            performanceTracker: config.performanceTracker
         )
         self.costTracker = CostTracker()
         self.middlewares = config.middlewares
@@ -756,6 +760,8 @@ public struct Configuration: Sendable {
     var healthMonitor: ProviderHealthMonitor?
     var validationPolicy: ResponseValidationPolicy = .disabled
     var taskClassifier: (any TaskClassifier)?
+    var deviceAssessment: (@Sendable () -> DeviceCapabilities)?
+    var performanceTracker: ProviderPerformanceTracker?
 
     var resolvedResponseValidator: ResponseValidator? {
         switch validationPolicy {
@@ -838,6 +844,26 @@ public struct Configuration: Sendable {
         case .enabled(let interval):
             healthMonitor = ProviderHealthMonitor(checkInterval: interval)
         }
+    }
+
+    /// Replaces the two router inputs that read machine state.
+    ///
+    /// The router's smart path asks `DeviceAssessor` for the live thermal state and asks
+    /// a `UserDefaults`-backed tracker for the performance history of earlier runs. Both
+    /// are correct in production and both make an assertion about a routing decision
+    /// depend on the machine it runs on — thermal pressure switches off the complexity
+    /// and task boosts outright, and ten recorded requests for a provider are enough to
+    /// move its score by as much as +15 or -20. Tests pin them; nothing else calls this, and leaving it
+    /// alone keeps the real device and the persisted tracker.
+    ///
+    /// Deliberately internal: it exists to make tests hermetic, not to be part of the
+    /// package's configuration surface.
+    mutating func routerEnvironment(
+        device: @escaping @Sendable () -> DeviceCapabilities,
+        performanceTracker tracker: ProviderPerformanceTracker
+    ) {
+        deviceAssessment = device
+        performanceTracker = tracker
     }
 }
 
