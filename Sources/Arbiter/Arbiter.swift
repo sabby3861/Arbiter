@@ -414,8 +414,11 @@ extension Arbiter {
             guard let schema, NativeStructuredOutput.supports(providerID) else { return request }
             var native = request
             // The schema constrains decoding, so the prompt keeps the caller's own wording
-            // rather than the instructions that stand in for a schema.
-            native.messages = original
+            // rather than the instructions that stand in for a schema — except where the
+            // provider asks for both. See `NativeStructuredOutput.wantsInstructedPrompt`.
+            if !NativeStructuredOutput.wantsInstructedPrompt(providerID) {
+                native.messages = original
+            }
             native.responseFormat = .structured(schema: schema)
             return native
         }

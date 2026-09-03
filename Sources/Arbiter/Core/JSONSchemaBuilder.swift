@@ -13,18 +13,33 @@ import Foundation
 enum NativeStructuredOutput {
     /// OpenAI compiles the schema into strict structured outputs, Anthropic into
     /// `output_config.format`, Gemini into `generationConfig.responseFormat.text.schema`,
-    /// and Apple Foundation Models into a `GenerationSchema` that drives constrained
-    /// decoding on device.
+    /// Ollama into `format` as a schema object, and Apple Foundation Models into a
+    /// `GenerationSchema` that drives constrained decoding on device.
     ///
-    /// The absentees are absent because of Arbiter's own mappers, not the APIs: the Ollama
-    /// mapper ignores `.structured` entirely and joins this set with the roadmap item that
-    /// teaches it to send a schema, not before — listing a provider here replaces the
-    /// prompt that works today with a request its mapper would mangle. MLX runs an
-    /// unconstrained local model and has nothing to send.
-    static let providers: Set<ProviderID> = [.openAI, .anthropic, .gemini, .appleFoundation]
+    /// MLX is the one absentee, and it is absent because of the runtime rather than the
+    /// mapper: it runs an unconstrained local model and has nothing to send, so the prompt
+    /// path is the only one that works there.
+    static let providers: Set<ProviderID> = [
+        .openAI, .anthropic, .gemini, .ollama, .appleFoundation,
+    ]
+
+    /// Providers that want the JSON instruction left in the prompt even though a
+    /// schema is being sent.
+    ///
+    /// The schema constrains decoding, so for the cloud models the prompt is
+    /// free to keep the caller's own wording. Ollama's structured-output
+    /// guidance asks for both — "Add 'return as JSON' to the prompt to help the
+    /// model understand the request" — and it runs small local models where that
+    /// help counts for more. Verified 3 September 2026 against
+    /// https://ollama.com/blog/structured-outputs.
+    static let providersWantingInstructedPrompt: Set<ProviderID> = [.ollama]
 
     static func supports(_ provider: ProviderID) -> Bool {
         providers.contains(provider)
+    }
+
+    static func wantsInstructedPrompt(_ provider: ProviderID) -> Bool {
+        providersWantingInstructedPrompt.contains(provider)
     }
 }
 

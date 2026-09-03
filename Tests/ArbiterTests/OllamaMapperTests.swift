@@ -88,12 +88,12 @@ struct OllamaMapperTests {
     }
 
     @Test func parseStreamingChunk() {
-        var accumulated = ""
+        var state = OllamaStreamState()
         let line = """
         {"model":"llama3.2","message":{"role":"assistant","content":"Hello"},"done":false}
         """
 
-        let chunk = mapper.parseStreamLine(line, accumulated: &accumulated)
+        let chunk = mapper.parseStreamLine(line, state: &state)
         #expect(chunk?.delta == "Hello")
         #expect(chunk?.accumulatedContent == "Hello")
         #expect(chunk?.isComplete == false)
@@ -101,12 +101,13 @@ struct OllamaMapperTests {
     }
 
     @Test func parseStreamingDone() {
-        var accumulated = "Hello world"
+        var state = OllamaStreamState()
+        state.accumulatedContent = "Hello world"
         let line = """
         {"model":"llama3.2","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":10,"eval_count":5}
         """
 
-        let chunk = mapper.parseStreamLine(line, accumulated: &accumulated)
+        let chunk = mapper.parseStreamLine(line, state: &state)
         #expect(chunk?.isComplete == true)
         #expect(chunk?.accumulatedContent == "Hello world")
         #expect(chunk?.usage?.inputTokens == 10)
@@ -114,7 +115,7 @@ struct OllamaMapperTests {
     }
 
     @Test func parseStreamAccumulation() {
-        var accumulated = ""
+        var state = OllamaStreamState()
 
         let line1 = """
         {"model":"llama3.2","message":{"role":"assistant","content":"Hello "},"done":false}
@@ -123,26 +124,26 @@ struct OllamaMapperTests {
         {"model":"llama3.2","message":{"role":"assistant","content":"world"},"done":false}
         """
 
-        _ = mapper.parseStreamLine(line1, accumulated: &accumulated)
-        let chunk2 = mapper.parseStreamLine(line2, accumulated: &accumulated)
+        _ = mapper.parseStreamLine(line1, state: &state)
+        let chunk2 = mapper.parseStreamLine(line2, state: &state)
 
         #expect(chunk2?.delta == "world")
         #expect(chunk2?.accumulatedContent == "Hello world")
     }
 
     @Test func parseStreamLineWithWhitespace() {
-        var accumulated = ""
+        var state = OllamaStreamState()
         let line = "  {\"model\":\"llama3.2\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"done\":false}  "
 
-        let chunk = mapper.parseStreamLine(line, accumulated: &accumulated)
+        let chunk = mapper.parseStreamLine(line, state: &state)
         #expect(chunk?.delta == "Hi")
         #expect(chunk?.isComplete == false)
     }
 
     @Test func parseStreamLineEmptyReturnsNil() {
-        var accumulated = ""
-        #expect(mapper.parseStreamLine("", accumulated: &accumulated) == nil)
-        #expect(mapper.parseStreamLine("   ", accumulated: &accumulated) == nil)
+        var state = OllamaStreamState()
+        #expect(mapper.parseStreamLine("", state: &state) == nil)
+        #expect(mapper.parseStreamLine("   ", state: &state) == nil)
     }
 
     @Test func parseInvalidJSON() {

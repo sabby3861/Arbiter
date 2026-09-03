@@ -155,10 +155,31 @@ struct StructuredOutputPathTests {
         #expect(request.messages.last?.content.text == "Who is Ada?")
     }
 
-    /// Ollama sits here rather than above on purpose: its mapper cannot yet send a schema
-    /// a request would survive, so the prompt path is the one that works. MLX runs an
-    /// unconstrained local model and has nothing to send.
-    @Test(arguments: [ProviderID.ollama, .mlx])
+    /// Ollama gets both: its own structured-output guidance asks for the JSON instruction
+    /// to stay in the prompt beside the schema, because the models it runs are small
+    /// enough to need the hint.
+    @Test func ollamaIsSentTheSchemaAndKeepsTheJSONInstruction() async throws {
+        let scripted = Self.provider(.ollama)
+        let ai = Arbiter(provider: scripted)
+
+        let contact = try await ai.generate("Who is Ada?", as: Contact.self)
+
+        #expect(contact.name == "Ada")
+        let request = scripted.requests[0]
+        guard case .structured(let schema)? = request.responseFormat else {
+            Issue.record("Expected a schema-constrained request, got \(String(describing: request.responseFormat))")
+            return
+        }
+        #expect(schema == (try JSONSchemaBuilder.schema(for: Contact.self)))
+
+        let prompt = try #require(request.messages.last?.content.text)
+        #expect(prompt.hasPrefix("Who is Ada?"))
+        #expect(prompt.contains("JSON"))
+    }
+
+    /// MLX sits here rather than above because it runs an unconstrained local model and
+    /// has nothing to send: the prompt is the only place the shape can be asked for.
+    @Test(arguments: [ProviderID.mlx])
     func aProviderWithoutSchemaSupportIsAskedInThePrompt(id: ProviderID) async throws {
         let scripted = Self.provider(id)
         let ai = Arbiter(provider: scripted)
@@ -194,7 +215,7 @@ struct StructuredOutputPathTests {
             id: .openAI, shouldError: .networkError(underlying: URLError(.timedOut))
         )
         let fallback = ScriptedProvider(
-            id: .ollama, script: [.answerTurn(Self.contactJSON, provider: .ollama)]
+            id: .mlx, script: [.answerTurn(Self.contactJSON, provider: .mlx)]
         )
         let ai = Arbiter {
             $0.cloud(failing)
